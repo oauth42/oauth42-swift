@@ -4,8 +4,7 @@ import XCTest
 /// Integration tests that require the OAuth42 backend to be running
 /// Run these tests with the backend started:
 ///   cd ~/localdev/oauth42
-///   make up-local-dev-ssl
-///   make run-local-oauth42
+///   make up-local-ssl
 ///
 /// These tests use a test client that should be configured in the backend
 final class IntegrationTests: XCTestCase {
@@ -34,9 +33,9 @@ final class IntegrationTests: XCTestCase {
                 return false
             }
 
-            // Check for expected health response
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-               json["status"] == "ok" {
+            // Backend returns plain text "OK"
+            if let responseText = String(data: data, encoding: .utf8),
+               responseText.trimmingCharacters(in: .whitespacesAndNewlines) == "OK" {
                 return true
             }
 
@@ -51,7 +50,7 @@ final class IntegrationTests: XCTestCase {
 
     func testOIDCDiscovery() async throws {
         guard await isBackendAvailable() else {
-            throw XCTSkip("Backend not running. Start with: make up-local-dev-ssl && make run-local-oauth42")
+            throw XCTSkip("Backend not running. Start with: make up-local-ssl")
         }
 
         let session = URLSession(configuration: .default, delegate: SelfSignedCertificateDelegate(), delegateQueue: nil)
