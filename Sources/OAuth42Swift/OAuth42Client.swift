@@ -200,17 +200,18 @@ public class OAuth42Client {
     // MARK: - User Info
 
     /// Fetch user information using access token
-    /// - Parameter accessToken: The access token (optional, will use stored token if nil)
+    /// Automatically refreshes the token if it's expired.
+    /// - Parameter accessToken: The access token (optional, will use stored token and auto-refresh if nil)
     /// - Returns: User information
     public func fetchUserInfo(accessToken: String? = nil) async throws -> UserInfo {
         let accessTokenValue: String
 
         if let provided = accessToken {
+            // Use provided token as-is (caller's responsibility to ensure it's valid)
             accessTokenValue = provided
-        } else if let stored = try tokenStore?.retrieveTokens()?.accessToken {
-            accessTokenValue = stored
         } else {
-            throw OAuth42Error.authorizationFailed("No access token available")
+            // Automatically get valid token, refreshing if necessary
+            accessTokenValue = try await getValidAccessToken()
         }
 
         let config = try await fetchConfiguration()
@@ -250,6 +251,8 @@ public class OAuth42Client {
     }
 
     /// Get valid access token, refreshing if necessary
+    /// This method automatically refreshes the token if it's expired (within 60 second threshold).
+    /// - Returns: A valid access token
     public func getValidAccessToken() async throws -> String {
         guard let tokens = try getStoredTokens() else {
             throw OAuth42Error.authorizationFailed("No stored tokens")
@@ -263,6 +266,38 @@ public class OAuth42Client {
         // Token is expired, try to refresh
         let refreshedTokens = try await refreshTokens(refreshToken: tokens.refreshToken)
         return refreshedTokens.accessToken
+    }
+
+    /// Make an authenticated API request with automatic token refresh
+    /// Convenience method for making custom API calls with automatic token management.
+    /// - Parameters:
+    ///   - url: The URL to request
+    ///   - method: HTTP method (default: GET)
+    ///   - body: Optional request body data
+    /// - Returns: Response data and HTTP response
+    public func makeAuthenticatedRequest(
+        url: URL,
+        method: String = "GET",
+        body: Data? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        let accessToken = try await getValidAccessToken()
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        if let body = body {
+            request.httpBody = body
+        }
+
+        let (data, response) = try await urlSession.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OAuth42Error.invalidResponse("Not an HTTP response")
+        }
+
+        return (data, httpResponse)
     }
 
     // MARK: - Private Helpers

@@ -153,6 +153,59 @@ final class OAuth42ClientTests: XCTestCase {
         // In a real test, we'd use a mock URLSession
     }
 
+    // MARK: - Automatic Token Refresh Tests
+
+    func testTokenExpirationDetection() throws {
+        // Test that expired tokens are properly detected
+        let expiredToken = TokenResponse(
+            accessToken: "expired_token",
+            tokenType: "Bearer",
+            expiresIn: 60,
+            refreshToken: "refresh_token",
+            scope: nil,
+            idToken: nil,
+            receivedAt: Date().addingTimeInterval(-120) // 2 minutes ago
+        )
+
+        XCTAssertTrue(expiredToken.isExpired())
+        XCTAssertTrue(expiredToken.isExpired(threshold: 0))
+        XCTAssertTrue(expiredToken.isExpired(threshold: 60))
+    }
+
+    func testTokenNotExpiredWithinThreshold() throws {
+        // Test that tokens within expiration threshold are considered expired
+        let almostExpiredToken = TokenResponse(
+            accessToken: "almost_expired",
+            tokenType: "Bearer",
+            expiresIn: 3600,
+            refreshToken: "refresh_token",
+            scope: nil,
+            idToken: nil,
+            receivedAt: Date().addingTimeInterval(-3550) // 10 seconds until expiry
+        )
+
+        // Should be expired with default 60 second threshold
+        XCTAssertTrue(almostExpiredToken.isExpired())
+
+        // Should not be expired with 0 second threshold
+        XCTAssertFalse(almostExpiredToken.isExpired(threshold: 0))
+    }
+
+    func testFreshTokenNotExpired() throws {
+        // Test that fresh tokens are not considered expired
+        let freshToken = TokenResponse(
+            accessToken: "fresh_token",
+            tokenType: "Bearer",
+            expiresIn: 3600,
+            refreshToken: "refresh_token",
+            scope: nil,
+            idToken: nil,
+            receivedAt: Date()
+        )
+
+        XCTAssertFalse(freshToken.isExpired())
+    }
+
     // MARK: - Error Tests
 
     func testOAuth42Errors() {

@@ -5,7 +5,7 @@
 //
 // Features:
 // - OAuth2 Authorization Code Flow with PKCE
-// - Automatic token refresh
+// - Automatic token refresh (transparent to the developer)
 // - Secure Keychain storage
 // - OpenID Connect support
 // - UserInfo endpoint integration
@@ -26,8 +26,13 @@
 //     // Exchange code for tokens (after redirect)
 //     let tokens = try await client.exchangeCodeForTokens(code: code, state: state)
 //
-//     // Fetch user info
+//     // Fetch user info (automatically refreshes token if expired)
 //     let userInfo = try await client.fetchUserInfo()
+//
+//     // Make custom authenticated API requests (also auto-refreshes)
+//     let (data, response) = try await client.makeAuthenticatedRequest(
+//         url: URL(string: "https://api.example.com/custom-endpoint")!
+//     )
 
 /// Current SDK version
 public let OAuth42SwiftVersion = "1.0.0"
