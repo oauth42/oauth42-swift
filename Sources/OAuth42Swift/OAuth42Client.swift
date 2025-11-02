@@ -197,6 +197,127 @@ public class OAuth42Client {
         return tokens
     }
 
+    // MARK: - Password Authentication (First-Party Apps Only)
+
+    /// Authenticate with username and password (for first-party apps like authenticator)
+    /// ⚠️ WARNING: Only use this for first-party OAuth42 apps (like the authenticator app).
+    /// Third-party apps should use the browser-based authorization code flow.
+    /// - Parameters:
+    ///   - email: User's email address
+    ///   - password: User's password
+    ///   - mfaCode: Optional MFA code (6 digits) if MFA is enabled
+    ///   - rememberMe: Whether to request a refresh token
+    /// - Returns: Login response with tokens and user info
+    /// - Throws: OAuth42Error.mfaRequired if MFA is enabled and no code provided
+    public func authenticateWithPassword(
+        email: String,
+        password: String,
+        mfaCode: String? = nil,
+        rememberMe: Bool = true
+    ) async throws -> LoginResponse {
+        // Build login endpoint URL
+        // The login endpoint is typically at /auth/login or /login
+        let loginEndpoint = issuer.appending("/auth/login")
+        guard let url = URL(string: loginEndpoint) else {
+            throw OAuth42Error.invalidURL(loginEndpoint)
+        }
+
+        // Create login request
+        let loginRequest = LoginRequest(
+            email: email,
+            password: password,
+            mfaCode: mfaCode,
+            rememberMe: rememberMe
+        )
+
+        // Perform login request
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        request.httpBody = try encoder.encode(loginRequest)
+
+        let (data, response) = try await urlSession.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OAuth42Error.invalidResponse("Not an HTTP response")
+        }
+
+        // Handle different response codes
+        switch httpResponse.statusCode {
+        case 200:
+            // Success - decode login response
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            decoder.dateDecodingStrategy = .iso8601
+            var loginResponse = try decoder.decode(LoginResponse.self, from: data)
+
+            // Ensure receivedAt is set to current time
+            loginResponse = LoginResponse(
+                accessToken: loginResponse.accessToken,
+                refreshToken: loginResponse.refreshToken,
+                expiresIn: loginResponse.expiresIn,
+                user: loginResponse.user,
+                receivedAt: Date()
+            )
+
+            // Store tokens if token store is configured
+            if let tokenStore = tokenStore {
+                try tokenStore.saveTokens(loginResponse.toTokenResponse())
+            }
+
+            return loginResponse
+
+        case 401, 403:
+            // Check if MFA is required
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+            // Try to decode as MFA error
+            if let mfaError = try? decoder.decode(MFARequiredError.self, from: data), mfaError.mfaRequired {
+                throw OAuth42Error.mfaRequired(mfaError.errorDescription ?? "MFA code is required")
+            }
+
+            // Try to decode as standard error
+            if let errorResponse = try? decoder.decode(OAuth2ErrorResponse.self, from: data) {
+                throw OAuth42Error.invalidCredentials(errorResponse.errorDescription ?? "Invalid email or password")
+            }
+
+            throw OAuth42Error.invalidCredentials("Authentication failed")
+
+        default:
+            // Other errors
+            let decoder = JSONDecoder()
+            if let errorResponse = try? decoder.decode(OAuth2ErrorResponse.self, from: data) {
+                throw OAuth42Error.loginFailed("\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
+            }
+            throw OAuth42Error.loginFailed("HTTP \(httpResponse.statusCode)")
+        }
+    }
+
+    /// Get MFA status for the authenticated user
+    /// - Returns: MFA status information
+    public func getMFAStatus() async throws -> MFAStatus {
+        let mfaStatusEndpoint = issuer.appending("/auth/mfa/status")
+        guard let url = URL(string: mfaStatusEndpoint) else {
+            throw OAuth42Error.invalidURL(mfaStatusEndpoint)
+        }
+
+        let (data, response) = try await makeAuthenticatedRequest(url: url)
+
+        guard response.statusCode == 200 else {
+            throw OAuth42Error.invalidResponse("HTTP \(response.statusCode)")
+        }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+
+        return try decoder.decode(MFAStatus.self, from: data)
+    }
+
     // MARK: - User Info
 
     /// Fetch user information using access token

@@ -111,7 +111,17 @@ let client = OAuth42Client(
 
 ### Authentication Flow
 
-#### Step 1: Build Authorization URL
+**Note:** OAuth42Swift supports two authentication flows:
+1. **Browser-Based Flow** (recommended for third-party apps)
+2. **Password Flow** (for first-party apps like OAuth42 Authenticator)
+
+Choose the flow that matches your use case.
+
+---
+
+#### Browser-Based Flow (Recommended for Customer Apps)
+
+##### Step 1: Build Authorization URL
 
 ```swift
 do {
@@ -186,6 +196,141 @@ func handleCallback(callbackURL: URL?, error: Error?) async {
     }
 }
 ```
+
+---
+
+#### Password Flow (First-Party Apps Only)
+
+**⚠️ WARNING:** This flow should ONLY be used for first-party OAuth42 applications like the authenticator app. Third-party apps should use the browser-based flow above.
+
+##### Direct Login (Without MFA)
+
+```swift
+do {
+    let loginResponse = try await client.authenticateWithPassword(
+        email: "user@example.com",
+        password: "user_password"
+    )
+
+    print("Logged in as: \(loginResponse.user.email)")
+    print("Access token: \(loginResponse.accessToken)")
+
+} catch OAuth42Error.mfaRequired(let message) {
+    // MFA is enabled, need to prompt for code
+    print("MFA required: \(message)")
+} catch OAuth42Error.invalidCredentials(let message) {
+    // Invalid username/password
+    print("Login failed: \(message)")
+} catch {
+    print("Error: \(error)")
+}
+```
+
+##### Login With MFA
+
+```swift
+// First attempt without MFA code
+do {
+    let loginResponse = try await client.authenticateWithPassword(
+        email: "user@example.com",
+        password: "user_password"
+    )
+    // Success - MFA not enabled
+} catch OAuth42Error.mfaRequired {
+    // MFA is enabled, prompt user for code and retry
+    let mfaCode = promptUserForMFACode() // Your UI code
+
+    do {
+        let loginResponse = try await client.authenticateWithPassword(
+            email: "user@example.com",
+            password: "user_password",
+            mfaCode: mfaCode
+        )
+
+        print("Logged in with MFA: \(loginResponse.user.email)")
+    } catch {
+        print("MFA verification failed: \(error)")
+    }
+}
+```
+
+##### Complete Password Flow Example
+
+```swift
+func loginWithCredentials(email: String, password: String) async {
+    do {
+        // Try login without MFA first
+        let response = try await client.authenticateWithPassword(
+            email: email,
+            password: password
+        )
+
+        // Success!
+        handleSuccessfulLogin(response)
+
+    } catch OAuth42Error.mfaRequired {
+        // MFA is enabled - show MFA input UI
+        showMFAPrompt { mfaCode in
+            Task {
+                await loginWithMFA(email: email, password: password, mfaCode: mfaCode)
+            }
+        }
+
+    } catch OAuth42Error.invalidCredentials(let message) {
+        showError("Invalid email or password: \(message)")
+
+    } catch {
+        showError("Login failed: \(error.localizedDescription)")
+    }
+}
+
+func loginWithMFA(email: String, password: String, mfaCode: String) async {
+    do {
+        let response = try await client.authenticateWithPassword(
+            email: email,
+            password: password,
+            mfaCode: mfaCode
+        )
+
+        handleSuccessfulLogin(response)
+
+    } catch OAuth42Error.invalidCredentials {
+        showError("Invalid MFA code")
+    } catch {
+        showError("Login failed: \(error.localizedDescription)")
+    }
+}
+
+func handleSuccessfulLogin(_ response: LoginResponse) {
+    // Tokens are automatically stored in Keychain (if configured)
+    // Navigate to authenticated screen
+    print("Logged in as: \(response.user.email)")
+}
+```
+
+##### Check MFA Status
+
+```swift
+// After authentication, check if user has MFA enabled
+do {
+    let mfaStatus = try await client.getMFAStatus()
+
+    if mfaStatus.enabled {
+        print("MFA is enabled")
+        print("Backup codes remaining: \(mfaStatus.backupCodesRemaining ?? 0)")
+
+        if let lastUsed = mfaStatus.lastUsedAt {
+            print("Last used: \(lastUsed)")
+        }
+    } else {
+        print("MFA is not enabled")
+    }
+} catch {
+    print("Failed to get MFA status: \(error)")
+}
+```
+
+---
 
 ### Token Management
 
@@ -388,6 +533,9 @@ Available error types:
 - `pkceGenerationFailed` - PKCE generation error
 - `invalidState` - State mismatch (CSRF protection)
 - `userCancelled` - User cancelled authentication
+- `mfaRequired(_:)` - MFA code is required (password flow)
+- `invalidCredentials(_:)` - Invalid username/password or MFA code
+- `loginFailed(_:)` - Password authentication failed
 
 ## Advanced Usage
 
@@ -581,5 +729,3 @@ This SDK is available under the MIT license. See the LICENSE file for more info.
 - **OAuth42 TypeScript SDK** - TypeScript/JavaScript client library
 
 ---
-
-**Made with ❤️ by the OAuth42 team**

@@ -20,4 +20,22 @@ public struct UserInfo: Codable {
         case emailVerified = "email_verified"
         case mfaEnabled = "mfa_enabled"
     }
+
+    public init(
+        id: String,
+        email: String,
+        username: String? = nil,
+        firstName: String? = nil,
+        lastName: String? = nil,
+        emailVerified: Bool? = nil,
+        mfaEnabled: Bool? = nil
+    ) {
+        self.id = id
+        self.email = email
+        self.username = username
+        self.firstName = firstName
+        self.lastName = lastName
+        self.emailVerified = emailVerified
+        self.mfaEnabled = mfaEnabled
+    }
 }

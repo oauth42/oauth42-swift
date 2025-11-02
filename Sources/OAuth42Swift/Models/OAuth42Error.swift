@@ -14,6 +14,9 @@ public enum OAuth42Error: Error, LocalizedError {
     case pkceGenerationFailed
     case invalidState
     case userCancelled
+    case mfaRequired(String)
+    case invalidCredentials(String)
+    case loginFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +44,12 @@ public enum OAuth42Error: Error, LocalizedError {
             return "Invalid state parameter - possible CSRF attack"
         case .userCancelled:
             return "User cancelled authentication"
+        case .mfaRequired(let message):
+            return "MFA code required: \(message)"
+        case .invalidCredentials(let message):
+            return "Invalid credentials: \(message)"
+        case .loginFailed(let message):
+            return "Login failed: \(message)"
         }
     }
 }
