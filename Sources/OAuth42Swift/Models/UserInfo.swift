@@ -12,13 +12,43 @@ public struct UserInfo: Codable {
     public let mfaEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case sub  // OIDC standard uses "sub" for subject/user ID
+        case id   // Login response uses "id"
         case email
         case username
         case firstName = "first_name"
         case lastName = "last_name"
         case emailVerified = "email_verified"
         case mfaEnabled = "mfa_enabled"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        // Try "sub" first (OIDC userinfo), then "id" (login response)
+        if let sub = try? container.decode(String.self, forKey: .sub) {
+            self.id = sub
+        } else {
+            self.id = try container.decode(String.self, forKey: .id)
+        }
+
+        self.email = try container.decode(String.self, forKey: .email)
+        self.username = try container.decodeIfPresent(String.self, forKey: .username)
+        self.firstName = try container.decodeIfPresent(String.self, forKey: .firstName)
+        self.lastName = try container.decodeIfPresent(String.self, forKey: .lastName)
+        self.emailVerified = try container.decodeIfPresent(Bool.self, forKey: .emailVerified)
+        self.mfaEnabled = try container.decodeIfPresent(Bool.self, forKey: .mfaEnabled)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .sub)
+        try container.encode(email, forKey: .email)
+        try container.encodeIfPresent(username, forKey: .username)
+        try container.encodeIfPresent(firstName, forKey: .firstName)
+        try container.encodeIfPresent(lastName, forKey: .lastName)
+        try container.encodeIfPresent(emailVerified, forKey: .emailVerified)
+        try container.encodeIfPresent(mfaEnabled, forKey: .mfaEnabled)
     }
 
     public init(

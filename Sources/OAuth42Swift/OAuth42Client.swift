@@ -10,6 +10,9 @@ public class OAuth42Client {
     private let tokenStore: TokenStore?
     private let urlSession: URLSession
 
+    /// Optional URL transformer for translating URLs (e.g., localhost to IP for iOS device testing)
+    private let urlTransformer: ((String) -> String)?
+
     private var configuration: OIDCConfiguration?
     private var currentPKCE: PKCEManager.PKCEPair?
     private var currentState: String?
@@ -23,6 +26,7 @@ public class OAuth42Client {
     ///   - scopes: Requested scopes (default: ["openid", "profile", "email"])
     ///   - tokenStore: Optional token store for persistence
     ///   - urlSession: Optional custom URLSession
+    ///   - urlTransformer: Optional URL transformer for translating URLs (e.g., localhost to IP)
     public init(
         clientId: String,
         clientSecret: String? = nil,
@@ -30,7 +34,8 @@ public class OAuth42Client {
         issuer: String,
         scopes: [String] = ["openid", "profile", "email"],
         tokenStore: TokenStore? = nil,
-        urlSession: URLSession = .shared
+        urlSession: URLSession = .shared,
+        urlTransformer: ((String) -> String)? = nil
     ) {
         self.clientId = clientId
         self.clientSecret = clientSecret
@@ -39,6 +44,18 @@ public class OAuth42Client {
         self.scopes = scopes
         self.tokenStore = tokenStore
         self.urlSession = urlSession
+        self.urlTransformer = urlTransformer
+    }
+
+    // MARK: - URL Transformation
+
+    /// Transform a URL string using the configured transformer
+    /// This is used to convert localhost URLs to IP addresses for iOS device testing
+    private func transformURL(_ urlString: String) -> String {
+        if let transformer = urlTransformer {
+            return transformer(urlString)
+        }
+        return urlString
     }
 
     // MARK: - OIDC Discovery
@@ -86,8 +103,8 @@ public class OAuth42Client {
         let stateValue = state ?? UUID().uuidString
         self.currentState = stateValue
 
-        // Build query parameters
-        var components = URLComponents(string: config.authorizationEndpoint)
+        // Build query parameters (transform URL for local development)
+        var components = URLComponents(string: transformURL(config.authorizationEndpoint))
         components?.queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientId),
@@ -124,8 +141,10 @@ public class OAuth42Client {
 
         let config = try await fetchConfiguration()
 
-        guard let url = URL(string: config.tokenEndpoint) else {
-            throw OAuth42Error.invalidURL(config.tokenEndpoint)
+        // Transform the URL for local development (e.g., localhost -> IP)
+        let transformedEndpoint = transformURL(config.tokenEndpoint)
+        guard let url = URL(string: transformedEndpoint) else {
+            throw OAuth42Error.invalidURL(transformedEndpoint)
         }
 
         // Build form parameters
@@ -173,8 +192,10 @@ public class OAuth42Client {
 
         let config = try await fetchConfiguration()
 
-        guard let url = URL(string: config.tokenEndpoint) else {
-            throw OAuth42Error.invalidURL(config.tokenEndpoint)
+        // Transform the URL for local development (e.g., localhost -> IP)
+        let transformedEndpoint = transformURL(config.tokenEndpoint)
+        guard let url = URL(string: transformedEndpoint) else {
+            throw OAuth42Error.invalidURL(transformedEndpoint)
         }
 
         var parameters: [String: String] = [
@@ -245,13 +266,25 @@ public class OAuth42Client {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
         }
 
+        // Debug logging
+        print("🔍 [OAuth42Client] Response status: \(httpResponse.statusCode)")
+        print("🔍 [OAuth42Client] Response headers: \(httpResponse.allHeaderFields)")
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("🔍 [OAuth42Client] Response body: \(responseString)")
+        } else {
+            print("❌ [OAuth42Client] Could not decode response body as UTF-8")
+        }
+
         // Handle different response codes
         switch httpResponse.statusCode {
         case 200:
             // Success - decode login response
             let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            // NOTE: Don't use .convertFromSnakeCase here because LoginResponse and UserInfo
+            // already have explicit CodingKeys that handle snake_case mapping
             decoder.dateDecodingStrategy = .iso8601
+
+            print("🔍 [OAuth42Client] Attempting to decode LoginResponse...")
             var loginResponse = try decoder.decode(LoginResponse.self, from: data)
 
             // Ensure receivedAt is set to current time
@@ -273,7 +306,7 @@ public class OAuth42Client {
         case 401, 403:
             // Check if MFA is required
             let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            // NOTE: Don't use .convertFromSnakeCase - error models have explicit CodingKeys
 
             // Try to decode as MFA error
             if let mfaError = try? decoder.decode(MFARequiredError.self, from: data), mfaError.mfaRequired {
@@ -312,7 +345,7 @@ public class OAuth42Client {
         }
 
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        // NOTE: Don't use .convertFromSnakeCase - MFAStatus has explicit CodingKeys
         decoder.dateDecodingStrategy = .iso8601
 
         return try decoder.decode(MFAStatus.self, from: data)
@@ -321,34 +354,67 @@ public class OAuth42Client {
     // MARK: - User Info
 
     /// Fetch user information using access token
-    /// Automatically refreshes the token if it's expired.
+    /// Automatically refreshes the token if it's expired or rejected by server.
     /// - Parameter accessToken: The access token (optional, will use stored token and auto-refresh if nil)
     /// - Returns: User information
     public func fetchUserInfo(accessToken: String? = nil) async throws -> UserInfo {
-        let accessTokenValue: String
+        let config = try await fetchConfiguration()
+
+        guard let userinfoEndpoint = config.userinfoEndpoint else {
+            throw OAuth42Error.invalidConfiguration("No userinfo endpoint in configuration")
+        }
+
+        // Transform the URL for local development (e.g., localhost -> IP)
+        let transformedEndpoint = transformURL(userinfoEndpoint)
+        guard let url = URL(string: transformedEndpoint) else {
+            throw OAuth42Error.invalidURL(transformedEndpoint)
+        }
+
+        // Get the access token to use
+        var accessTokenValue: String
+        let wasProvidedToken: Bool
 
         if let provided = accessToken {
             // Use provided token as-is (caller's responsibility to ensure it's valid)
             accessTokenValue = provided
+            wasProvidedToken = true
         } else {
             // Automatically get valid token, refreshing if necessary
             accessTokenValue = try await getValidAccessToken()
+            wasProvidedToken = false
         }
 
-        let config = try await fetchConfiguration()
-
-        guard let userinfoEndpoint = config.userinfoEndpoint,
-              let url = URL(string: userinfoEndpoint) else {
-            throw OAuth42Error.invalidConfiguration("No userinfo endpoint in configuration")
-        }
-
+        // First attempt
         var request = URLRequest(url: url)
         request.setValue("Bearer \(accessTokenValue)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await urlSession.data(for: request)
+        var (data, response) = try await urlSession.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard var httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
+        }
+
+        // If we get 401 and we weren't given a specific token, try to refresh and retry
+        if httpResponse.statusCode == 401 && !wasProvidedToken {
+            // Try to refresh the token
+            if let tokens = try? getStoredTokens(), let refreshToken = tokens.refreshToken {
+                do {
+                    let refreshedTokens = try await refreshTokens(refreshToken: refreshToken)
+                    accessTokenValue = refreshedTokens.accessToken
+
+                    // Retry with refreshed token
+                    request.setValue("Bearer \(accessTokenValue)", forHTTPHeaderField: "Authorization")
+                    (data, response) = try await urlSession.data(for: request)
+
+                    guard let retryResponse = response as? HTTPURLResponse else {
+                        throw OAuth42Error.invalidResponse("Not an HTTP response")
+                    }
+                    httpResponse = retryResponse
+                } catch {
+                    // Refresh failed, throw original 401 error
+                    throw OAuth42Error.invalidResponse("HTTP 401 (token refresh failed: \(error.localizedDescription))")
+                }
+            }
         }
 
         guard httpResponse.statusCode == 200 else {
