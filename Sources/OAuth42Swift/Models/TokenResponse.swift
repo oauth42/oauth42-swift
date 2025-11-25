@@ -23,6 +23,10 @@ public struct TokenResponse: Codable {
         return Date().addingTimeInterval(threshold) >= expiresAt
     }
 
+    /// Coding keys for JSON serialization
+    /// Note: We use two different key sets:
+    /// - Standard OAuth2 keys (snake_case) for decoding backend responses
+    /// - Storage keys (includes receivedAt) for persisting to Keychain
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case tokenType = "token_type"
@@ -30,7 +34,7 @@ public struct TokenResponse: Codable {
         case refreshToken = "refresh_token"
         case scope
         case idToken = "id_token"
-        // Note: receivedAt is NOT part of the backend response - it's set client-side
+        case receivedAt = "received_at"  // Client-side timestamp for token expiration tracking
     }
 
     public init(accessToken: String, tokenType: String, expiresIn: Int, refreshToken: String?, scope: String?, idToken: String?, receivedAt: Date = Date()) {
@@ -43,7 +47,9 @@ public struct TokenResponse: Codable {
         self.receivedAt = receivedAt
     }
 
-    // Custom decoder - receivedAt is set client-side, not decoded from JSON
+    /// Custom decoder that handles both backend responses and Keychain storage
+    /// - When decoding from backend: receivedAt won't be present, defaults to Date()
+    /// - When loading from Keychain: receivedAt is present and preserves the original timestamp
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
@@ -54,11 +60,13 @@ public struct TokenResponse: Codable {
         scope = try container.decodeIfPresent(String.self, forKey: .scope)
         idToken = try container.decodeIfPresent(String.self, forKey: .idToken)
 
-        // Set receivedAt to current time (not from backend)
-        receivedAt = Date()
+        // Try to decode receivedAt if present (from Keychain), otherwise use current time (from backend)
+        // This preserves the original timestamp when loading from storage, ensuring accurate expiration tracking
+        receivedAt = try container.decodeIfPresent(Date.self, forKey: .receivedAt) ?? Date()
     }
 
-    // Custom encoder - don't encode receivedAt (it will be regenerated on decode)
+    /// Custom encoder that persists receivedAt for accurate token expiration tracking
+    /// This is critical for the iOS app to properly detect expired tokens after restart
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
@@ -68,6 +76,8 @@ public struct TokenResponse: Codable {
         try container.encodeIfPresent(refreshToken, forKey: .refreshToken)
         try container.encodeIfPresent(scope, forKey: .scope)
         try container.encodeIfPresent(idToken, forKey: .idToken)
-        // Note: receivedAt is NOT encoded - it will be set to Date() when decoded
+        // Encode receivedAt to preserve the original timestamp when storing to Keychain
+        // This ensures isExpired() works correctly after app restart
+        try container.encode(receivedAt, forKey: .receivedAt)
     }
 }

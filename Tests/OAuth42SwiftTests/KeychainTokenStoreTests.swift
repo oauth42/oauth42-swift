@@ -108,4 +108,69 @@ final class KeychainTokenStoreTests: XCTestCase {
         XCTAssertEqual(retrieved?.expiresIn, tokens2.expiresIn)
         XCTAssertEqual(retrieved?.idToken, tokens2.idToken)
     }
+
+    /// Test that receivedAt is persisted and restored correctly
+    /// This is critical for accurate token expiration tracking (Issue #243)
+    func testReceivedAtPersistence() throws {
+        // Create tokens with a specific receivedAt time in the past
+        let pastDate = Date(timeIntervalSinceNow: -1800)  // 30 minutes ago
+        let tokens = TokenResponse(
+            accessToken: "test_access_token",
+            tokenType: "Bearer",
+            expiresIn: 3600,  // 1 hour
+            refreshToken: "test_refresh_token",
+            scope: "openid",
+            idToken: nil,
+            receivedAt: pastDate
+        )
+
+        // Verify the token should not be considered expired yet (30 min old, 60 min TTL)
+        XCTAssertFalse(tokens.isExpired(), "Fresh token should not be expired")
+
+        // Save tokens to Keychain
+        try tokenStore.saveTokens(tokens)
+
+        // Retrieve tokens - this should preserve the original receivedAt
+        let retrieved = try tokenStore.retrieveTokens()
+        XCTAssertNotNil(retrieved)
+
+        // Verify receivedAt was preserved (within 1 second tolerance for Date comparison)
+        let timeDifference = abs(retrieved!.receivedAt.timeIntervalSince(pastDate))
+        XCTAssertLessThan(timeDifference, 1.0, "receivedAt should be preserved after storage round-trip")
+
+        // Verify the expiration check still works correctly with preserved timestamp
+        XCTAssertFalse(retrieved!.isExpired(), "Token loaded from storage should not be expired")
+    }
+
+    /// Test that tokens with old receivedAt are correctly identified as expired
+    /// This ensures the iOS app will properly trigger token refresh after restart
+    func testExpiredTokenDetectionAfterStorage() throws {
+        // Create tokens with a receivedAt time that makes them expired
+        // Using expiresIn: 60 (1 minute) and receivedAt: 2 minutes ago
+        let expiredDate = Date(timeIntervalSinceNow: -120)  // 2 minutes ago
+        let tokens = TokenResponse(
+            accessToken: "expired_access_token",
+            tokenType: "Bearer",
+            expiresIn: 60,  // 1 minute TTL
+            refreshToken: "test_refresh_token",
+            scope: "openid",
+            idToken: nil,
+            receivedAt: expiredDate
+        )
+
+        // Verify the token IS expired before saving
+        XCTAssertTrue(tokens.isExpired(), "Token should be expired before saving")
+
+        // Save to Keychain
+        try tokenStore.saveTokens(tokens)
+
+        // Retrieve from Keychain
+        let retrieved = try tokenStore.retrieveTokens()
+        XCTAssertNotNil(retrieved)
+
+        // CRITICAL: After loading from storage, the token should STILL be expired
+        // This is the bug fix for Issue #243 - previously receivedAt was reset to Date()
+        // which made expired tokens appear valid
+        XCTAssertTrue(retrieved!.isExpired(), "Expired token should remain expired after storage round-trip")
+    }
 }
