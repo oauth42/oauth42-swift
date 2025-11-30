@@ -25,7 +25,7 @@ Add OAuth42Swift to your project using Xcode:
 1. **File → Add Package Dependencies**
 2. Enter the repository URL:
    ```
-   https://github.com/devxpod/oauth42-swift.git
+   https://github.com/oauth42/oauth42-swift.git
    ```
 3. Select version rule (e.g., "Up to Next Major: 1.0.0")
 4. Click **Add Package**
@@ -34,7 +34,7 @@ Or add it to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/devxpod/oauth42-swift.git", from: "1.0.0")
+    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.0.0")
 ]
 ```
 
@@ -718,8 +718,8 @@ This SDK is available under the MIT license. See the LICENSE file for more info.
 ## Support
 
 - **Documentation**: https://docs.oauth42.com
-- **Issues**: https://github.com/devxpod/oauth42-swift/issues
-- **Main Project**: https://github.com/devxpod/oauth42
+- **Issues**: https://github.com/oauth42/oauth42-swift/issues
+- **Main Project**: https://github.com/oauth42/oauth42
 
 ## Related Projects
 
