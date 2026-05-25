@@ -6,6 +6,7 @@ public class OAuth42Client {
     private let clientSecret: String?
     private let redirectURI: String
     private let issuer: String
+    private let hostedAuthBaseURL: String
     private let scopes: [String]
     private let tokenStore: TokenStore?
     private let urlSession: URLSession
@@ -22,7 +23,8 @@ public class OAuth42Client {
     ///   - clientId: OAuth2 client ID
     ///   - clientSecret: Optional client secret (for confidential clients)
     ///   - redirectURI: OAuth2 redirect URI (e.g., "myapp://oauth-callback")
-    ///   - issuer: OAuth42 issuer URL (e.g., "https://localhost:8443")
+    ///   - issuer: OAuth42 OIDC issuer URL (e.g., "https://api.oauth42.com")
+    ///   - hostedAuthBaseURL: OAuth42 hosted auth URL for social sign-in (e.g., "https://auth.oauth42.com")
     ///   - scopes: Requested scopes (default: ["openid", "profile", "email"])
     ///   - tokenStore: Optional token store for persistence
     ///   - urlSession: Optional custom URLSession
@@ -32,6 +34,7 @@ public class OAuth42Client {
         clientSecret: String? = nil,
         redirectURI: String,
         issuer: String,
+        hostedAuthBaseURL: String? = nil,
         scopes: [String] = ["openid", "profile", "email"],
         tokenStore: TokenStore? = nil,
         urlSession: URLSession = .shared,
@@ -40,7 +43,9 @@ public class OAuth42Client {
         self.clientId = clientId
         self.clientSecret = clientSecret
         self.redirectURI = redirectURI
-        self.issuer = issuer
+        self.issuer = OAuth42Client.normalizedBaseURL(issuer)
+        self.hostedAuthBaseURL = hostedAuthBaseURL.map(OAuth42Client.normalizedBaseURL)
+            ?? OAuth42Client.defaultHostedAuthBaseURL(for: issuer)
         self.scopes = scopes
         self.tokenStore = tokenStore
         self.urlSession = urlSession
@@ -56,6 +61,30 @@ public class OAuth42Client {
             return transformer(urlString)
         }
         return urlString
+    }
+
+    private static func normalizedBaseURL(_ urlString: String) -> String {
+        return urlString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func defaultHostedAuthBaseURL(for issuer: String) -> String {
+        let normalizedIssuer = normalizedBaseURL(issuer)
+        guard var components = URLComponents(string: normalizedIssuer),
+              let host = components.host else {
+            return normalizedIssuer
+        }
+
+        if host == "api.oauth42.com" {
+            components.host = "auth.oauth42.com"
+            return components.string ?? "https://auth.oauth42.com"
+        }
+
+        if host.hasPrefix("api.") {
+            components.host = "auth." + host.dropFirst(4)
+            return components.string ?? normalizedIssuer
+        }
+
+        return normalizedIssuer
     }
 
     // MARK: - OIDC Discovery
@@ -78,6 +107,11 @@ public class OAuth42Client {
         }
 
         guard httpResponse.statusCode == 200 else {
+            if httpResponse.statusCode == 404 {
+                throw OAuth42Error.invalidIssuer(
+                    "OIDC discovery was not found at \(discoveryURL). Use the canonical OAuth42 issuer, such as https://api.oauth42.com, and configure hostedAuthBaseURL separately for hosted social sign-in."
+                )
+            }
             throw OAuth42Error.invalidResponse("HTTP \(httpResponse.statusCode)")
         }
 
@@ -120,6 +154,109 @@ public class OAuth42Client {
         }
 
         return url
+    }
+
+    // MARK: - Hosted Social Authentication
+
+    /// Fetch hosted social providers enabled for this OAuth client.
+    /// - Returns: Provider identifiers such as `google`, `github`, or `apple`.
+    public func fetchHostedSocialProviders() async throws -> [String] {
+        _ = try await fetchConfiguration()
+
+        guard var components = URLComponents(
+            string: hostedAuthBaseURL.appending("/api/social-providers/available")
+        ) else {
+            throw OAuth42Error.invalidURL(hostedAuthBaseURL)
+        }
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: clientId)
+        ]
+
+        guard let providerURL = components.url else {
+            throw OAuth42Error.invalidURL("Failed to build hosted social providers URL")
+        }
+        guard let url = URL(string: transformURL(providerURL.absoluteString)) else {
+            throw OAuth42Error.invalidURL(providerURL.absoluteString)
+        }
+
+        let (data, response) = try await urlSession.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OAuth42Error.invalidResponse("Not an HTTP response")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw hostedSocialError(
+                statusCode: httpResponse.statusCode,
+                data: data,
+                fallback: "Could not fetch hosted social providers from \(url.absoluteString)"
+            )
+        }
+
+        let providerResponse = try JSONDecoder().decode(HostedSocialProvidersResponse.self, from: data)
+        return normalizedProviders(providerResponse.providers)
+    }
+
+    /// Build a provider authorization URL for OAuth42 hosted social sign-in.
+    /// - Parameters:
+    ///   - provider: Social provider identifier such as `google`, `github`, or `apple`.
+    ///   - isSignup: Whether the hosted flow should be treated as signup.
+    ///   - state: Optional state parameter for CSRF protection.
+    /// - Returns: Provider authorization URL to open in a browser or ASWebAuthenticationSession.
+    public func buildHostedSocialAuthorizationURL(
+        provider: String,
+        isSignup: Bool = false,
+        state: String? = nil
+    ) async throws -> URL {
+        _ = try await fetchConfiguration()
+
+        guard let url = URL(string: transformURL(hostedAuthBaseURL.appending("/api/social-auth/init"))) else {
+            throw OAuth42Error.invalidURL(hostedAuthBaseURL)
+        }
+
+        let pkce = try PKCEManager.generatePKCEPair()
+        let stateValue = state ?? UUID().uuidString
+        self.currentPKCE = pkce
+        self.currentState = stateValue
+
+        let payload = HostedSocialAuthInitRequest(
+            provider: provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            clientId: clientId,
+            redirectURI: redirectURI,
+            state: stateValue,
+            isSignup: isSignup
+        )
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw OAuth42Error.invalidResponse("Not an HTTP response")
+            }
+
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw hostedSocialError(
+                    statusCode: httpResponse.statusCode,
+                    data: data,
+                    fallback: "Could not start hosted social sign-in for provider \(provider)"
+                )
+            }
+
+            let providerResponse = try JSONDecoder().decode(HostedSocialAuthInitResponse.self, from: data)
+            guard let authorizationURL = URL(string: providerResponse.authorizationURL) else {
+                throw OAuth42Error.hostedSocialAuthFailed("Invalid authorization_url in hosted social response")
+            }
+
+            return authorizationURL
+        } catch {
+            self.currentPKCE = nil
+            self.currentState = nil
+            throw error
+        }
     }
 
     // MARK: - Token Exchange
@@ -535,5 +672,61 @@ public class OAuth42Client {
         )
 
         return tokenResponse
+    }
+
+    private func normalizedProviders(_ providers: [String]) -> [String] {
+        var seen = Set<String>()
+        return providers.compactMap { provider in
+            let normalized = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, !seen.contains(normalized) else {
+                return nil
+            }
+            seen.insert(normalized)
+            return normalized
+        }
+    }
+
+    private func hostedSocialError(statusCode: Int, data: Data, fallback: String) -> OAuth42Error {
+        if let errorResponse = try? JSONDecoder().decode(OAuth2ErrorResponse.self, from: data) {
+            return .hostedSocialAuthFailed("\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
+        }
+
+        if statusCode == 404 {
+            return .hostedSocialAuthFailed(
+                "\(fallback). Endpoint returned HTTP 404. Check hostedAuthBaseURL; for production hosted social auth use https://auth.oauth42.com."
+            )
+        }
+
+        return .hostedSocialAuthFailed("\(fallback). HTTP \(statusCode)")
+    }
+}
+
+private struct HostedSocialProvidersResponse: Codable {
+    let providers: [String]
+}
+
+private struct HostedSocialAuthInitRequest: Codable {
+    let provider: String
+    let clientId: String
+    let redirectURI: String
+    let state: String
+    let isSignup: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case clientId = "client_id"
+        case redirectURI = "redirect_uri"
+        case state
+        case isSignup = "is_signup"
+    }
+}
+
+private struct HostedSocialAuthInitResponse: Codable {
+    let authorizationURL: String
+    let state: String?
+
+    enum CodingKeys: String, CodingKey {
+        case authorizationURL = "authorization_url"
+        case state
     }
 }
