@@ -28,14 +28,14 @@ Add OAuth42Swift to your project using Xcode:
    ```
    https://github.com/oauth42/oauth42-swift.git
    ```
-3. Select version rule (e.g., "Up to Next Major: 1.1.0")
+3. Select version rule (e.g., "Up to Next Major: 1.1.1")
 4. Click **Add Package**
 
 Or add it to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.0")
+    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.1")
 ]
 ```
 

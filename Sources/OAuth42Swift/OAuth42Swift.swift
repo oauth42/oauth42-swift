@@ -35,4 +35,4 @@
 //     )
 
 /// Current SDK version
-public let OAuth42SwiftVersion = "1.1.0"
+public let OAuth42SwiftVersion = "1.1.1"
