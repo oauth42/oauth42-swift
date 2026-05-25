@@ -3,10 +3,12 @@ import Foundation
 /// Errors that can occur during OAuth42 operations
 public enum OAuth42Error: Error, LocalizedError {
     case invalidConfiguration(String)
+    case invalidIssuer(String)
     case invalidURL(String)
     case networkError(Error)
     case invalidResponse(String)
     case authorizationFailed(String)
+    case hostedSocialAuthFailed(String)
     case tokenExchangeFailed(String)
     case refreshFailed(String)
     case missingRefreshToken
@@ -22,6 +24,8 @@ public enum OAuth42Error: Error, LocalizedError {
         switch self {
         case .invalidConfiguration(let message):
             return "Invalid configuration: \(message)"
+        case .invalidIssuer(let message):
+            return "Invalid issuer: \(message)"
         case .invalidURL(let url):
             return "Invalid URL: \(url)"
         case .networkError(let error):
@@ -30,6 +34,8 @@ public enum OAuth42Error: Error, LocalizedError {
             return "Invalid response: \(message)"
         case .authorizationFailed(let message):
             return "Authorization failed: \(message)"
+        case .hostedSocialAuthFailed(let message):
+            return "Hosted social authentication failed: \(message)"
         case .tokenExchangeFailed(let message):
             return "Token exchange failed: \(message)"
         case .refreshFailed(let message):

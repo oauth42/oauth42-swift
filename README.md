@@ -9,6 +9,7 @@ A comprehensive Swift SDK for integrating OAuth42 authentication into iOS, macOS
 ## Features
 
 - ✅ **OAuth2 Authorization Code Flow** with PKCE (S256)
+- ✅ **Hosted Social Login** - Google, GitHub, Apple, and other tenant-enabled providers
 - ✅ **Automatic Token Refresh** - transparent and seamless
 - ✅ **Secure Keychain Storage** - encrypted token persistence
 - ✅ **OpenID Connect Support** - full OIDC discovery and UserInfo
@@ -52,7 +53,8 @@ import OAuth42Swift
 let client = OAuth42Client(
     clientId: "your-client-id",
     redirectURI: "myapp://oauth-callback",
-    issuer: "https://oauth42.example.com",
+    issuer: "https://api.oauth42.com",
+    hostedAuthBaseURL: "https://auth.oauth42.com",
     tokenStore: KeychainTokenStore(service: "com.example.myapp")
 )
 ```
@@ -87,7 +89,8 @@ print("Logged in as: \(userInfo.email)")
 let client = OAuth42Client(
     clientId: "your-client-id",
     redirectURI: "myapp://oauth-callback",
-    issuer: "https://oauth42.example.com"
+    issuer: "https://api.oauth42.com",
+    hostedAuthBaseURL: "https://auth.oauth42.com"
 )
 ```
 
@@ -103,11 +106,16 @@ let client = OAuth42Client(
     clientId: "your-client-id",
     clientSecret: "your-secret",  // Optional for confidential clients
     redirectURI: "myapp://oauth-callback",
-    issuer: "https://oauth42.example.com",
+    issuer: "https://api.oauth42.com",
+    hostedAuthBaseURL: "https://auth.oauth42.com",
     scopes: ["openid", "profile", "email"],  // Default scopes
     tokenStore: tokenStore
 )
 ```
+
+Use the canonical OAuth42 issuer for OpenID Connect discovery and token
+exchange. Tenant vanity hosts such as `https://tahoeaccess.oauth42.com` should
+not be used as `issuer` unless that host serves `/.well-known/openid-configuration`.
 
 ### Authentication Flow
 
@@ -196,6 +204,47 @@ func handleCallback(callbackURL: URL?, error: Error?) async {
     }
 }
 ```
+
+---
+
+#### Hosted Social Login
+
+OAuth42 can proxy tenant-enabled social providers through the hosted auth
+service. The SDK keeps the OIDC issuer (`https://api.oauth42.com`) separate from
+the hosted social auth host (`https://auth.oauth42.com`) so native apps do not
+need to call OAuth42 social endpoints directly.
+
+```swift
+let client = OAuth42Client(
+    clientId: "your-client-id",
+    redirectURI: "myapp://oauth-callback",
+    issuer: "https://api.oauth42.com",
+    hostedAuthBaseURL: "https://auth.oauth42.com"
+)
+
+let providers = try await client.fetchHostedSocialProviders()
+
+if providers.contains("google") {
+    let googleURL = try await client.buildHostedSocialAuthorizationURL(
+        provider: "google",
+        isSignup: true
+    )
+    // Open googleURL in ASWebAuthenticationSession.
+}
+
+if providers.contains("github") {
+    let githubURL = try await client.buildHostedSocialAuthorizationURL(provider: "github")
+    // Open githubURL in ASWebAuthenticationSession.
+}
+
+if providers.contains("apple") {
+    let appleURL = try await client.buildHostedSocialAuthorizationURL(provider: "apple")
+    // Open appleURL in ASWebAuthenticationSession.
+}
+```
+
+Handle the OAuth callback the same way as the browser-based flow: parse `code`
+and `state` from the app redirect URI, then call `exchangeCodeForTokens(code:state:)`.
 
 ---
 
