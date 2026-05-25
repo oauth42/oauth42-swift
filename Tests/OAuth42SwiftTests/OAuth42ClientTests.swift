@@ -172,7 +172,7 @@ final class OAuth42ClientTests: XCTestCase {
             }
 
             XCTAssertEqual(request.url?.host, "auth.oauth42.com")
-            XCTAssertEqual(request.url?.path, "/api/social-providers/available")
+            XCTAssertEqual(request.url?.path, "/api/social-providers")
             XCTAssertEqual(
                 URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
                     .queryItems?
@@ -199,7 +199,7 @@ final class OAuth42ClientTests: XCTestCase {
 
         XCTAssertEqual(providers, ["google", "github", "apple"])
         XCTAssertEqual(requestedURLs.first, "https://api.oauth42.com/.well-known/openid-configuration")
-        XCTAssertEqual(requestedURLs.last?.hasPrefix("https://auth.oauth42.com/api/social-providers/available"), true)
+        XCTAssertEqual(requestedURLs.last?.hasPrefix("https://auth.oauth42.com/api/social-providers"), true)
     }
 
     func testBuildHostedSocialAuthorizationURLPostsInitRequest() async throws {

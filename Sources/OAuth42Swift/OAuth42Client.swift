@@ -164,7 +164,7 @@ public class OAuth42Client {
         _ = try await fetchConfiguration()
 
         guard var components = URLComponents(
-            string: hostedAuthBaseURL.appending("/api/social-providers/available")
+            string: hostedAuthBaseURL.appending("/api/social-providers")
         ) else {
             throw OAuth42Error.invalidURL(hostedAuthBaseURL)
         }
