@@ -277,6 +277,59 @@ final class OAuth42ClientTests: XCTestCase {
         }
     }
 
+    // MARK: - Logout URL Tests
+
+    func testBuildProviderLogoutURLUsesIssuerAndDefaultRedirectURI() throws {
+        let client = OAuth42Client(
+            clientId: "test-client-id",
+            redirectURI: "myapp://oauth-callback",
+            issuer: "https://api.oauth42.com/"
+        )
+
+        let url = try client.buildProviderLogoutURL()
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.scheme, "https")
+        XCTAssertEqual(components.host, "api.oauth42.com")
+        XCTAssertEqual(components.path, "/auth/logout")
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
+            "myapp://oauth-callback"
+        )
+    }
+
+    func testBuildProviderLogoutURLAcceptsCustomRedirectURI() throws {
+        let client = OAuth42Client(
+            clientId: "test-client-id",
+            redirectURI: "myapp://oauth-callback",
+            issuer: "https://api.oauth42.com"
+        )
+
+        let url = try client.buildProviderLogoutURL(redirectURI: "myapp://signed-out")
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(
+            components.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
+            "myapp://signed-out"
+        )
+    }
+
+    func testBuildProviderLogoutURLAppliesURLTransformer() throws {
+        let client = OAuth42Client(
+            clientId: "test-client-id",
+            redirectURI: "myapp://oauth-callback",
+            issuer: "https://localhost:8443",
+            urlTransformer: { url in
+                url.replacingOccurrences(of: "localhost", with: "10.0.2.2")
+            }
+        )
+
+        let url = try client.buildProviderLogoutURL()
+
+        XCTAssertEqual(url.host, "10.0.2.2")
+        XCTAssertEqual(url.path, "/auth/logout")
+    }
+
     // MARK: - Automatic Token Refresh Tests
 
     func testTokenExpirationDetection() throws {

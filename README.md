@@ -28,14 +28,14 @@ Add OAuth42Swift to your project using Xcode:
    ```
    https://github.com/oauth42/oauth42-swift.git
    ```
-3. Select version rule (e.g., "Up to Next Major: 1.1.1")
+3. Select version rule (e.g., "Up to Next Major: 1.1.2")
 4. Click **Add Package**
 
 Or add it to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.1")
+    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.2")
 ]
 ```
 
@@ -419,16 +419,36 @@ if let tokens = try client.getStoredTokens() {
 }
 ```
 
-#### Clear Tokens (Logout)
+#### Clear Tokens (Local Logout)
 
 ```swift
 do {
     try client.clearTokens()
-    print("Logged out successfully")
+    print("Local tokens cleared")
 } catch {
     print("Failed to clear tokens: \(error)")
 }
 ```
+
+#### Full Provider Logout
+
+Use provider logout when the user explicitly signs out and you need the next
+sign-in to show account selection instead of automatically reusing the OAuth42
+browser session. On iOS/macOS, the SDK owns the full logout sequence.
+
+```swift
+Task {
+    do {
+        try await client.signOut(presentationContextProvider: self)
+        print("Logged out completely")
+    } catch {
+        print("Failed to log out: \(error)")
+    }
+}
+```
+
+Use `clearTokens()` by itself only for local session cleanup, such as
+session-expired handling where presenting a browser would be inappropriate.
 
 ### Making API Requests
 
@@ -476,6 +496,7 @@ let (data, response) = try await client.makeAuthenticatedRequest(
 ```swift
 import SwiftUI
 import OAuth42Swift
+import AuthenticationServices
 
 @MainActor
 class AuthManager: ObservableObject {
@@ -522,13 +543,15 @@ class AuthManager: ObservableObject {
         }
     }
 
-    func logout() {
-        do {
-            try client.clearTokens()
-            self.isAuthenticated = false
-            self.userInfo = nil
-        } catch {
-            self.error = error
+    func logout(presentationContextProvider: ASWebAuthenticationPresentationContextProviding) {
+        Task {
+            do {
+                try await client.signOut(presentationContextProvider: presentationContextProvider)
+                self.isAuthenticated = false
+                self.userInfo = nil
+            } catch {
+                self.error = error
+            }
         }
     }
 }
