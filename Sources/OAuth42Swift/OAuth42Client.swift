@@ -18,6 +18,10 @@ public class OAuth42Client {
     private var currentPKCE: PKCEManager.PKCEPair?
     private var currentState: String?
 
+    var defaultCallbackURLScheme: String? {
+        URL(string: redirectURI)?.scheme
+    }
+
     /// Initialize OAuth42Client
     /// - Parameters:
     ///   - clientId: OAuth2 client ID
@@ -257,6 +261,34 @@ public class OAuth42Client {
             self.currentState = nil
             throw error
         }
+    }
+
+    // MARK: - Logout
+
+    /// Build the OAuth42 provider-level logout URL.
+    ///
+    /// This lower-level helper is useful when an app owns browser presentation
+    /// itself. On Apple platforms that use `ASWebAuthenticationSession`, prefer
+    /// the SDK-provided `signOut(presentationContextProvider:...)` method so
+    /// token clearing and provider logout stay in one consistent flow.
+    ///
+    /// - Parameter redirectURI: Optional URI OAuth42 redirects to after logout.
+    ///   Defaults to the client's redirect URI.
+    /// - Returns: Logout URL to open in a browser or web authentication session.
+    public func buildProviderLogoutURL(redirectURI: String? = nil) throws -> URL {
+        guard var components = URLComponents(string: transformURL(issuer.appending("/auth/logout"))) else {
+            throw OAuth42Error.invalidURL("Failed to build provider logout URL")
+        }
+
+        components.queryItems = [
+            URLQueryItem(name: "redirect_uri", value: redirectURI ?? self.redirectURI)
+        ]
+
+        guard let url = components.url else {
+            throw OAuth42Error.invalidURL("Failed to build provider logout URL")
+        }
+
+        return url
     }
 
     // MARK: - Token Exchange
