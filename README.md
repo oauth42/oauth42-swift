@@ -28,14 +28,14 @@ Add OAuth42Swift to your project using Xcode:
    ```
    https://github.com/oauth42/oauth42-swift.git
    ```
-3. Select version rule (e.g., "Up to Next Major: 1.1.2")
+3. Select version rule (e.g., "Up to Next Major: 1.1.3")
 4. Click **Add Package**
 
 Or add it to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.2")
+    .package(url: "https://github.com/oauth42/oauth42-swift.git", from: "1.1.3")
 ]
 ```
 
@@ -207,12 +207,13 @@ func handleCallback(callbackURL: URL?, error: Error?) async {
 
 ---
 
-#### Hosted Social Login
+#### Direct Social Login
 
 OAuth42 can proxy tenant-enabled social providers through the hosted auth
 service. The SDK keeps the OIDC issuer (`https://api.oauth42.com`) separate from
-the hosted social auth host (`https://auth.oauth42.com`) so native apps do not
-need to call OAuth42 social endpoints directly.
+the hosted social auth host (`https://auth.oauth42.com`) and preserves the
+original OAuth scope, state, PKCE challenge, and nonce through the social
+provider redirect.
 
 ```swift
 let client = OAuth42Client(
@@ -225,7 +226,7 @@ let client = OAuth42Client(
 let providers = try await client.fetchHostedSocialProviders()
 
 if providers.contains("google") {
-    let googleURL = try await client.buildHostedSocialAuthorizationURL(
+    let googleURL = try await client.buildSocialAuthorizationURL(
         provider: "google",
         isSignup: true
     )
@@ -233,12 +234,12 @@ if providers.contains("google") {
 }
 
 if providers.contains("github") {
-    let githubURL = try await client.buildHostedSocialAuthorizationURL(provider: "github")
+    let githubURL = try await client.buildSocialAuthorizationURL(provider: "github")
     // Open githubURL in ASWebAuthenticationSession.
 }
 
 if providers.contains("apple") {
-    let appleURL = try await client.buildHostedSocialAuthorizationURL(provider: "apple")
+    let appleURL = try await client.buildSocialAuthorizationURL(provider: "apple")
     // Open appleURL in ASWebAuthenticationSession.
 }
 ```

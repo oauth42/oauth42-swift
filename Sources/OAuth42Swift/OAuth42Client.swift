@@ -128,9 +128,11 @@ public class OAuth42Client {
     // MARK: - Authorization
 
     /// Build authorization URL for starting OAuth2 flow
-    /// - Parameter state: Optional state parameter for CSRF protection
+    /// - Parameters:
+    ///   - state: Optional state parameter for CSRF protection.
+    ///   - nonce: Optional nonce for OpenID Connect ID token replay protection.
     /// - Returns: Authorization URL to open in browser
-    public func buildAuthorizationURL(state: String? = nil) async throws -> URL {
+    public func buildAuthorizationURL(state: String? = nil, nonce: String? = nil) async throws -> URL {
         let config = try await fetchConfiguration()
 
         // Generate PKCE parameters
@@ -143,7 +145,7 @@ public class OAuth42Client {
 
         // Build query parameters (transform URL for local development)
         var components = URLComponents(string: transformURL(config.authorizationEndpoint))
-        components?.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientId),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
@@ -152,6 +154,10 @@ public class OAuth42Client {
             URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
             URLQueryItem(name: "code_challenge_method", value: pkce.codeChallengeMethod)
         ]
+        if let nonce {
+            queryItems.append(URLQueryItem(name: "nonce", value: nonce))
+        }
+        components?.queryItems = queryItems
 
         guard let url = components?.url else {
             throw OAuth42Error.invalidURL("Failed to build authorization URL")
@@ -200,16 +206,47 @@ public class OAuth42Client {
         return normalizedProviders(providerResponse.providers)
     }
 
+    /// Build a provider authorization URL for direct OAuth42 social sign-in.
+    ///
+    /// This starts the same OAuth2 Authorization Code + PKCE transaction as
+    /// `buildAuthorizationURL`, then asks OAuth42 hosted auth for a provider
+    /// URL while preserving the original `scope`, `state`, PKCE challenge, and
+    /// `nonce`. Open the returned URL in a browser or `ASWebAuthenticationSession`,
+    /// then pass the app callback's `code` and `state` to
+    /// `exchangeCodeForTokens(code:state:)`.
+    ///
+    /// - Parameters:
+    ///   - provider: Social provider identifier such as `google`, `github`, or `apple`.
+    ///   - isSignup: Whether the hosted flow should be treated as signup.
+    ///   - state: Optional state parameter for CSRF protection.
+    ///   - nonce: Optional nonce for OpenID Connect ID token replay protection.
+    /// - Returns: Provider authorization URL to open in a browser or ASWebAuthenticationSession.
+    public func buildSocialAuthorizationURL(
+        provider: String,
+        isSignup: Bool = false,
+        state: String? = nil,
+        nonce: String? = nil
+    ) async throws -> URL {
+        try await buildHostedSocialAuthorizationURL(
+            provider: provider,
+            isSignup: isSignup,
+            state: state,
+            nonce: nonce
+        )
+    }
+
     /// Build a provider authorization URL for OAuth42 hosted social sign-in.
     /// - Parameters:
     ///   - provider: Social provider identifier such as `google`, `github`, or `apple`.
     ///   - isSignup: Whether the hosted flow should be treated as signup.
     ///   - state: Optional state parameter for CSRF protection.
+    ///   - nonce: Optional nonce for OpenID Connect ID token replay protection.
     /// - Returns: Provider authorization URL to open in a browser or ASWebAuthenticationSession.
     public func buildHostedSocialAuthorizationURL(
         provider: String,
         isSignup: Bool = false,
-        state: String? = nil
+        state: String? = nil,
+        nonce: String? = nil
     ) async throws -> URL {
         _ = try await fetchConfiguration()
 
@@ -227,6 +264,10 @@ public class OAuth42Client {
             clientId: clientId,
             redirectURI: redirectURI,
             state: stateValue,
+            scope: scopes.joined(separator: " "),
+            codeChallenge: pkce.codeChallenge,
+            codeChallengeMethod: pkce.codeChallengeMethod,
+            nonce: nonce,
             isSignup: isSignup
         )
 
@@ -742,6 +783,10 @@ private struct HostedSocialAuthInitRequest: Codable {
     let clientId: String
     let redirectURI: String
     let state: String
+    let scope: String
+    let codeChallenge: String
+    let codeChallengeMethod: String
+    let nonce: String?
     let isSignup: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -749,6 +794,10 @@ private struct HostedSocialAuthInitRequest: Codable {
         case clientId = "client_id"
         case redirectURI = "redirect_uri"
         case state
+        case scope
+        case codeChallenge = "code_challenge"
+        case codeChallengeMethod = "code_challenge_method"
+        case nonce
         case isSignup = "is_signup"
     }
 }

@@ -202,7 +202,7 @@ final class OAuth42ClientTests: XCTestCase {
         XCTAssertEqual(requestedURLs.last?.hasPrefix("https://auth.oauth42.com/api/social-providers"), true)
     }
 
-    func testBuildHostedSocialAuthorizationURLPostsInitRequest() async throws {
+    func testBuildSocialAuthorizationURLPostsFullOAuthContext() async throws {
         let session = makeMockSession()
         var initRequestBody: [String: Any]?
         MockURLProtocol.requestHandler = { request in
@@ -234,10 +234,11 @@ final class OAuth42ClientTests: XCTestCase {
             urlSession: session
         )
 
-        let url = try await client.buildHostedSocialAuthorizationURL(
+        let url = try await client.buildSocialAuthorizationURL(
             provider: "Google",
             isSignup: true,
-            state: "state-123"
+            state: "state-123",
+            nonce: "nonce-123"
         )
 
         XCTAssertEqual(url.absoluteString, "https://accounts.google.com/o/oauth2/v2/auth?client_id=google")
@@ -245,7 +246,75 @@ final class OAuth42ClientTests: XCTestCase {
         XCTAssertEqual(initRequestBody?["client_id"] as? String, "test-client-id")
         XCTAssertEqual(initRequestBody?["redirect_uri"] as? String, "myapp://oauth-callback")
         XCTAssertEqual(initRequestBody?["state"] as? String, "state-123")
+        XCTAssertEqual(initRequestBody?["scope"] as? String, "openid profile email")
+        XCTAssertEqual(initRequestBody?["code_challenge_method"] as? String, "S256")
+        XCTAssertEqual(initRequestBody?["nonce"] as? String, "nonce-123")
+        let codeChallenge = try XCTUnwrap(initRequestBody?["code_challenge"] as? String)
+        XCTAssertEqual(codeChallenge.count, 43)
         XCTAssertEqual(initRequestBody?["is_signup"] as? Bool, true)
+    }
+
+    func testHostedSocialAuthorizationURLKeepsPKCEForTokenExchange() async throws {
+        let session = makeMockSession()
+        var tokenRequestBody: String?
+        MockURLProtocol.requestHandler = { request in
+            switch request.url?.path {
+            case "/.well-known/openid-configuration":
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Self.oidcConfigurationJSON()
+                )
+
+            case "/api/social-auth/init":
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    #"{"authorization_url":"https://accounts.google.com/o/oauth2/v2/auth?client_id=google","state":"server-state"}"#.data(using: .utf8)!
+                )
+
+            case "/oauth2/token":
+                tokenRequestBody = String(data: Self.httpBodyData(from: request) ?? Data(), encoding: .utf8)
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    """
+                    {
+                        "access_token": "access-token",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "refresh_token": "refresh-token",
+                        "scope": "openid profile email"
+                    }
+                    """.data(using: .utf8)!
+                )
+
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!,
+                    Data()
+                )
+            }
+        }
+
+        let client = OAuth42Client(
+            clientId: "test-client-id",
+            redirectURI: "myapp://oauth-callback",
+            issuer: "https://api.oauth42.com",
+            hostedAuthBaseURL: "https://auth.oauth42.com",
+            urlSession: session
+        )
+
+        _ = try await client.buildHostedSocialAuthorizationURL(
+            provider: "google",
+            state: "state-123"
+        )
+        _ = try await client.exchangeCodeForTokens(code: "oauth-code", state: "state-123")
+
+        let body = try XCTUnwrap(tokenRequestBody)
+        XCTAssertTrue(body.contains("grant_type=authorization_code"))
+        XCTAssertTrue(body.contains("code=oauth-code"))
+        XCTAssertTrue(body.contains("client_id=test-client-id"))
+        XCTAssertTrue(body.contains("redirect_uri=myapp://oauth-callback"))
+        XCTAssertTrue(body.contains("code_verifier="))
     }
 
     func testHostedSocialRejectsInvalidIssuerHost() async throws {
