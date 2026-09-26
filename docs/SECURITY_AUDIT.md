@@ -57,3 +57,11 @@ The hostless package runner was also attempted and failed Keychain tests with `e
 - Add additional resource API origins through `allowedResourceOrigins`; never allow an origin based on an untrusted URL parameter.
 - The SDK keeps an omitted previous ID token during refresh for identity continuity; this does not renew that ID token's expiration.
 - Mobile Keychain access is unavailable while the device is locked. Background refresh designs must account for that policy.
+
+## Package deployment targets
+
+PR #5 CI exposed that the package declared older OS targets than the async
+URLSession API it uses. The manifest now requires iOS 15, macOS 12, watchOS 8
+and tvOS 15. Consumers targeting earlier versions must raise their deployment
+target before updating. This makes the supported platform boundary explicit;
+macOS and iOS simulator tests do not establish watchOS/tvOS runtime coverage.

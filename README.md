@@ -14,7 +14,7 @@ A comprehensive Swift SDK for integrating OAuth42 authentication into iOS, macOS
 - ✅ **Secure Keychain Storage** - encrypted token persistence
 - ✅ **OpenID Connect Support** - full OIDC discovery and UserInfo
 - ✅ **Modern Swift** - async/await, Codable, and type-safe APIs
-- ✅ **Cross-Platform** - iOS 14+, macOS 11+, tvOS 14+, watchOS 7+
+- ✅ **Cross-Platform** - iOS 15+, macOS 12+, tvOS 15+, watchOS 8+
 - ✅ **Zero Dependencies** - pure Swift implementation
 
 ## Installation
@@ -698,10 +698,10 @@ print("Supported scopes: \(config.scopesSupported ?? [])")
 
 ## Requirements
 
-- **iOS**: 14.0+
-- **macOS**: 11.0+
-- **tvOS**: 14.0+
-- **watchOS**: 7.0+
+- **iOS**: 15.0+
+- **macOS**: 12.0+
+- **tvOS**: 15.0+
+- **watchOS**: 8.0+
 - **Swift**: 5.7+
 - **Xcode**: 14.0+
 
