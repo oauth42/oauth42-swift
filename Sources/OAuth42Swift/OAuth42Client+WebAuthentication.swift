@@ -24,6 +24,7 @@ public extension OAuth42Client {
     ///     client's redirect URI.
     ///   - prefersEphemeralWebBrowserSession: Passed through to
     ///     `ASWebAuthenticationSession`.
+    @MainActor
     func signOut(
         presentationContextProvider: ASWebAuthenticationPresentationContextProviding,
         redirectURI: String? = nil,
@@ -44,6 +45,7 @@ public extension OAuth42Client {
     /// Most apps should call `signOut(presentationContextProvider:...)`
     /// instead. This method is provided for advanced flows that manage local
     /// token storage separately.
+    @MainActor
     func performProviderLogout(
         presentationContextProvider: ASWebAuthenticationPresentationContextProviding,
         redirectURI: String? = nil,
@@ -64,6 +66,7 @@ public extension OAuth42Client {
 }
 
 @available(iOS 13.0, macOS 11.0, macCatalyst 13.0, *)
+@MainActor
 private final class OAuth42WebAuthenticationSessionRunner {
     private let presentationContextProvider: ASWebAuthenticationPresentationContextProviding
     private var session: ASWebAuthenticationSession?

@@ -24,22 +24,30 @@ public class KeychainTokenStore: TokenStore {
             throw OAuth42Error.keychainError("Failed to encode tokens")
         }
 
-        // Delete any existing tokens first
-        try? deleteTokens()
-
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: tokenKey,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
 
         if let accessGroup = accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        // Update atomically: an unsuccessful write must not destroy the last valid session.
+        var lookup = query
+        lookup.removeValue(forKey: kSecValueData as String)
+        lookup.removeValue(forKey: kSecAttrAccessible as String)
+        let updates: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(lookup as CFDictionary, updates as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query as CFDictionary, nil)
+        }
 
         guard status == errSecSuccess else {
             throw OAuth42Error.keychainError("Failed to save to Keychain: \(status)")
@@ -52,7 +60,7 @@ public class KeychainTokenStore: TokenStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: tokenKey,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
         if let accessGroup = accessGroup {
@@ -87,7 +95,7 @@ public class KeychainTokenStore: TokenStore {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: tokenKey
+            kSecAttrAccount as String: tokenKey,
         ]
 
         if let accessGroup = accessGroup {

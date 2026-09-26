@@ -24,7 +24,8 @@ let package = Package(
             name: "OAuth42Swift"),
         .testTarget(
             name: "OAuth42SwiftTests",
-            dependencies: ["OAuth42Swift"]
+            dependencies: ["OAuth42Swift"],
+            exclude: ["Fixtures"]
         ),
     ]
 )
