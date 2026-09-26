@@ -1,4 +1,6 @@
+import Security
 import XCTest
+
 @testable import OAuth42Swift
 
 final class KeychainTokenStoreTests: XCTestCase {
@@ -18,6 +20,38 @@ final class KeychainTokenStoreTests: XCTestCase {
         // Clean up after tests
         try? tokenStore.deleteTokens()
         super.tearDown()
+    }
+
+    func testUpdatePreservesKeychainItemAndDeviceOnlyProtection() throws {
+        let tokens = TokenResponse(
+            accessToken: "first", tokenType: "Bearer", expiresIn: 3600,
+            refreshToken: nil, scope: nil, idToken: nil)
+        try tokenStore.saveTokens(tokens)
+        func attributes() throws -> [String: Any] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: testService, kSecAttrAccount as String: "oauth42_tokens",
+                kSecReturnAttributes as String: true, kSecReturnPersistentRef as String: true,
+            ]
+            var result: CFTypeRef?
+            XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &result), errSecSuccess)
+            return try XCTUnwrap(result as? [String: Any])
+        }
+        let before = try attributes()
+        try tokenStore.saveTokens(
+            TokenResponse(
+                accessToken: "second", tokenType: "Bearer", expiresIn: 3600,
+                refreshToken: nil, scope: nil, idToken: nil))
+        let after = try attributes()
+        #if !os(macOS)
+            XCTAssertEqual(
+                after[kSecAttrAccessible as String] as? String,
+                kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        #endif  // The macOS login Keychain does not expose iOS data-protection accessibility attributes.
+        XCTAssertEqual(
+            try XCTUnwrap(before[kSecValuePersistentRef as String] as? Data),
+            try XCTUnwrap(after[kSecValuePersistentRef as String] as? Data))
+        XCTAssertEqual(try tokenStore.retrieveTokens()?.accessToken, "second")
     }
 
     func testSaveAndRetrieveTokens() throws {
@@ -136,7 +170,8 @@ final class KeychainTokenStoreTests: XCTestCase {
 
         // Verify receivedAt was preserved (within 1 second tolerance for Date comparison)
         let timeDifference = abs(retrieved!.receivedAt.timeIntervalSince(pastDate))
-        XCTAssertLessThan(timeDifference, 1.0, "receivedAt should be preserved after storage round-trip")
+        XCTAssertLessThan(
+            timeDifference, 1.0, "receivedAt should be preserved after storage round-trip")
 
         // Verify the expiration check still works correctly with preserved timestamp
         XCTAssertFalse(retrieved!.isExpired(), "Token loaded from storage should not be expired")
@@ -171,6 +206,7 @@ final class KeychainTokenStoreTests: XCTestCase {
         // CRITICAL: After loading from storage, the token should STILL be expired
         // This is the bug fix for Issue #243 - previously receivedAt was reset to Date()
         // which made expired tokens appear valid
-        XCTAssertTrue(retrieved!.isExpired(), "Expired token should remain expired after storage round-trip")
+        XCTAssertTrue(
+            retrieved!.isExpired(), "Expired token should remain expired after storage round-trip")
     }
 }

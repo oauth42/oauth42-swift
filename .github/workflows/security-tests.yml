@@ -1,0 +1,14 @@
+name: SDK security regression tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  apple-platforms:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+      - run: make build

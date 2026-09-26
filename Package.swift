@@ -6,10 +6,10 @@ import PackageDescription
 let package = Package(
     name: "OAuth42Swift",
     platforms: [
-        .iOS(.v14),
-        .macOS(.v11),
-        .tvOS(.v14),
-        .watchOS(.v7)
+        .iOS(.v15),
+        .macOS(.v12),
+        .tvOS(.v15),
+        .watchOS(.v8)
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
@@ -24,7 +24,8 @@ let package = Package(
             name: "OAuth42Swift"),
         .testTarget(
             name: "OAuth42SwiftTests",
-            dependencies: ["OAuth42Swift"]
+            dependencies: ["OAuth42Swift"],
+            exclude: ["Fixtures"]
         ),
     ]
 )

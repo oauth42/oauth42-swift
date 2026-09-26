@@ -300,6 +300,7 @@ final class OAuth42ClientTests: XCTestCase {
             redirectURI: "myapp://oauth-callback",
             issuer: "https://api.oauth42.com",
             hostedAuthBaseURL: "https://auth.oauth42.com",
+            scopes: ["email"],
             urlSession: session
         )
 
@@ -313,7 +314,7 @@ final class OAuth42ClientTests: XCTestCase {
         XCTAssertTrue(body.contains("grant_type=authorization_code"))
         XCTAssertTrue(body.contains("code=oauth-code"))
         XCTAssertTrue(body.contains("client_id=test-client-id"))
-        XCTAssertTrue(body.contains("redirect_uri=myapp://oauth-callback"))
+        XCTAssertTrue(body.contains("redirect_uri=myapp%3A%2F%2Foauth-callback"))
         XCTAssertTrue(body.contains("code_verifier="))
     }
 

@@ -1,125 +1,136 @@
-import XCTest
-@testable import OAuth42Swift
+#if os(macOS)
+    import XCTest
+    import Security
+    @testable import OAuth42Swift
 
-/// Integration tests that require the OAuth42 backend to be running
-/// Run these tests with the backend started:
-///   cd ~/localdev/oauth42
-///   make up-local-ssl
-///
-/// These tests use a test client that should be configured in the backend
-final class IntegrationTests: XCTestCase {
-
-    let testIssuer = "https://localhost:8443"
-    let testClientId = "test-client-id"  // Must be configured in backend
-    let testClientSecret = "test-client-secret"  // Must be configured in backend
-    let testRedirectURI = "oauth42sdk://test-callback"
-
-    // MARK: - Helper to check if backend is available
-
-    func isBackendAvailable() async -> Bool {
-        guard let url = URL(string: "\(testIssuer)/health") else {
-            return false
+    /// Real HTTPS transport tests with a generated local certificate and a disposable server.
+    /// No external backend, production credentials, TLS bypass, or conditional skips.
+    final class IntegrationTests: XCTestCase {
+        func testOIDCDiscoveryAndPKCEOverTrustedTLS() async throws {
+            let fixture = try HTTPSFixture()
+            defer { fixture.stop() }
+            let c = fixture.client()
+            let config = try await c.fetchConfiguration()
+            XCTAssertEqual(config.issuer, fixture.issuer)
+            let url = try await c.buildAuthorizationURL()
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first { $0.name == "code_challenge_method" }?.value, "S256")
+            XCTAssertEqual(query.first { $0.name == "code_challenge" }?.value?.count, 43)
+            XCTAssertFalse(query.first { $0.name == "nonce" }?.value?.isEmpty ?? true)
         }
 
-        do {
-            // Create URLSession that accepts self-signed certificates
-            let configuration = URLSessionConfiguration.default
-            let session = URLSession(configuration: configuration, delegate: SelfSignedCertificateDelegate(), delegateQueue: nil)
+        func testUntrustedCertificateIsRejected() async throws {
+            let fixture = try HTTPSFixture()
+            defer { fixture.stop() }
+            let c = OAuth42Client(
+                clientId: "client", redirectURI: "app://callback", issuer: fixture.issuer)
+            do {
+                _ = try await c.fetchConfiguration()
+                XCTFail("Untrusted TLS must fail")
+            } catch { XCTAssertTrue(error is URLError) }
+        }
 
-            let (data, response) = try await session.data(from: url)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                return false
+        func testTokenRedirectsNeverForwardCredentials() async throws {
+            for mode in ["same", "cross"] {
+                let fixture = try HTTPSFixture(mode: mode)
+                defer { fixture.stop() }
+                let c = fixture.client()
+                do {
+                    _ = try await c.refreshTokens(refreshToken: "sensitive-refresh")
+                    XCTFail("Redirect must fail")
+                } catch {}
+                let (data, _) = try await fixture.session.data(
+                    from: URL(string: fixture.issuer + "/stats")!)
+                let stats = try JSONSerialization.jsonObject(with: data) as! [String: Int]
+                XCTAssertEqual(
+                    stats["redirect_hits"], 0, "307 must not transmit credentials to either redirect target")
             }
+        }
+    }
 
-            // Backend returns plain text "OK"
-            if let responseText = String(data: data, encoding: .utf8),
-               responseText.trimmingCharacters(in: .whitespacesAndNewlines) == "OK" {
-                return true
+    private final class HTTPSFixture {
+        let directory: URL
+        let process: Process
+        let input = Pipe()
+        let issuer: String
+        let session: URLSession
+        init(mode: String = "cross") throws {
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let cert = directory.appendingPathComponent("cert.pem").path
+            let key = directory.appendingPathComponent("key.pem").path
+            let openssl = Process()
+            openssl.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+            openssl.arguments = [
+                "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "1", "-keyout", key,
+                "-out", cert, "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
+                "-addext", "extendedKeyUsage=serverAuth",
+            ]
+            openssl.standardOutput = FileHandle.nullDevice
+            openssl.standardError = FileHandle.nullDevice
+            try openssl.run()
+            openssl.waitUntilExit()
+            guard openssl.terminationStatus == 0 else { throw URLError(.cannotCreateFile) }
+            let pem = try String(contentsOfFile: cert)
+            let base64 = pem.components(separatedBy: .newlines).filter { !$0.hasPrefix("---") }.joined()
+            let certificate = try XCTUnwrap(
+                SecCertificateCreateWithData(nil, Data(base64Encoded: base64)! as CFData))
+            session = URLSession(
+                configuration: .ephemeral, delegate: FixtureTrust(certificate), delegateQueue: nil)
+            process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .appendingPathComponent("Fixtures/https_server.py").path
+            process.arguments = ["python3", "-u", script, cert, key, mode]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardInput = input
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            var line = Data()
+            while let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty,
+                byte != Data([10])
+            { line.append(byte) }
+            guard let port = Int(String(decoding: line, as: UTF8.self)) else {
+                throw URLError(.cannotConnectToHost)
             }
-
-            return false
-        } catch {
-            print("Backend not available: \(error.localizedDescription)")
-            return false
+            issuer = "https://localhost:\(port)"
+        }
+        func client() -> OAuth42Client {
+            OAuth42Client(
+                clientId: "client", redirectURI: "app://callback", issuer: issuer, urlSession: session)
+        }
+        func stop() {
+            try? input.fileHandleForWriting.close()
+            if process.isRunning { process.terminate() }
+            session.invalidateAndCancel()
+            try? FileManager.default.removeItem(at: directory)
         }
     }
 
-    // MARK: - Integration Tests
-
-    func testOIDCDiscovery() async throws {
-        guard await isBackendAvailable() else {
-            throw XCTSkip("Backend not running. Start with: make up-local-ssl")
-        }
-
-        let session = URLSession(configuration: .default, delegate: SelfSignedCertificateDelegate(), delegateQueue: nil)
-        let client = OAuth42Client(
-            clientId: testClientId,
-            clientSecret: testClientSecret,
-            redirectURI: testRedirectURI,
-            issuer: testIssuer,
-            urlSession: session
-        )
-
-        let config = try await client.fetchConfiguration()
-
-        XCTAssertEqual(config.issuer, testIssuer)
-        XCTAssertTrue(config.authorizationEndpoint.hasPrefix(testIssuer))
-        XCTAssertTrue(config.tokenEndpoint.hasPrefix(testIssuer))
-        XCTAssertNotNil(config.userinfoEndpoint)
-        XCTAssertNotNil(config.jwksUri)
-        XCTAssertTrue(config.codeChallengeMethodsSupported?.contains("S256") ?? false)
-    }
-
-    func testBuildAuthorizationURLWithBackend() async throws {
-        guard await isBackendAvailable() else {
-            throw XCTSkip("Backend not running")
-        }
-
-        let session = URLSession(configuration: .default, delegate: SelfSignedCertificateDelegate(), delegateQueue: nil)
-        let client = OAuth42Client(
-            clientId: testClientId,
-            clientSecret: testClientSecret,
-            redirectURI: testRedirectURI,
-            issuer: testIssuer,
-            urlSession: session
-        )
-
-        let authURL = try await client.buildAuthorizationURL()
-
-        XCTAssertTrue(authURL.absoluteString.hasPrefix(testIssuer))
-        XCTAssertTrue(authURL.absoluteString.contains("client_id=\(testClientId)"))
-        XCTAssertTrue(authURL.absoluteString.contains("redirect_uri="))
-        XCTAssertTrue(authURL.absoluteString.contains("code_challenge="))
-        XCTAssertTrue(authURL.absoluteString.contains("code_challenge_method=S256"))
-        XCTAssertTrue(authURL.absoluteString.contains("state="))
-    }
-
-    // NOTE: Full OAuth flow integration tests would require:
-    // 1. Automated browser interaction or mock authorization server
-    // 2. Test user credentials
-    // 3. Ability to complete the authorization flow programmatically
-    //
-    // These are typically done with end-to-end testing tools or
-    // by mocking the authorization server responses.
-}
-
-/// URLSessionDelegate that accepts self-signed certificates for local development
-class SelfSignedCertificateDelegate: NSObject, URLSessionDelegate {
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        // Only accept self-signed certificates for localhost
-        if challenge.protectionSpace.host == "localhost" || challenge.protectionSpace.host == "127.0.0.1" {
-            if let serverTrust = challenge.protectionSpace.serverTrust {
-                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+    private final class FixtureTrust: NSObject, URLSessionDelegate {
+        let certificate: SecCertificate
+        init(_ certificate: SecCertificate) { self.certificate = certificate }
+        func urlSession(
+            _ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                challenge.protectionSpace.host == "localhost",
+                let trust = challenge.protectionSpace.serverTrust
+            else {
+                completionHandler(.performDefaultHandling, nil)
                 return
             }
+            SecTrustSetAnchorCertificates(trust, [certificate] as CFArray)
+            SecTrustSetAnchorCertificatesOnly(trust, true)
+            var trustError: CFError?
+            if SecTrustEvaluateWithError(trust, &trustError) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                print("Fixture trust error: \(String(describing: trustError))")
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
         }
-
-        completionHandler(.performDefaultHandling, nil)
     }
-}
+#endif

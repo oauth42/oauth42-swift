@@ -15,8 +15,22 @@ public class OAuth42Client {
     private let urlTransformer: ((String) -> String)?
 
     private var configuration: OIDCConfiguration?
-    private var currentPKCE: PKCEManager.PKCEPair?
-    private var currentState: String?
+    private struct Authorization {
+        let pkce: PKCEManager.PKCEPair
+        let state: String
+        let nonce: String?
+        let created: Date
+    }
+    private let lock = NSLock()
+    private var pending: Authorization?
+    var authorizationNow: () -> Date = Date.init  // Internal clock seam for expiry regression tests.
+    private var generation = UUID()
+    private var trustedSubject: String?
+    private var trustedIDToken: String?
+    private var trustedAccessToken: String?
+    private var activeOperation: UUID?
+    private let redirectDelegate = NoRedirectDelegate()
+    private let resourceOrigins: [String]
 
     var defaultCallbackURLScheme: String? {
         URL(string: redirectURI)?.scheme
@@ -31,7 +45,8 @@ public class OAuth42Client {
     ///   - hostedAuthBaseURL: OAuth42 hosted auth URL for social sign-in (e.g., "https://auth.oauth42.com")
     ///   - scopes: Requested scopes (default: ["openid", "profile", "email"])
     ///   - tokenStore: Optional token store for persistence
-    ///   - urlSession: Optional custom URLSession
+    ///   - allowedResourceOrigins: Additional HTTPS origins explicitly authorized to receive bearer tokens.
+    ///   - urlSession: Optional custom URLSession (its TLS delegate is preserved; redirects and caching are disabled)
     ///   - urlTransformer: Optional URL transformer for translating URLs (e.g., localhost to IP)
     public init(
         clientId: String,
@@ -42,17 +57,29 @@ public class OAuth42Client {
         scopes: [String] = ["openid", "profile", "email"],
         tokenStore: TokenStore? = nil,
         urlSession: URLSession = .shared,
+        allowedResourceOrigins: [URL] = [],
         urlTransformer: ((String) -> String)? = nil
     ) {
         self.clientId = clientId
         self.clientSecret = clientSecret
         self.redirectURI = redirectURI
         self.issuer = OAuth42Client.normalizedBaseURL(issuer)
-        self.hostedAuthBaseURL = hostedAuthBaseURL.map(OAuth42Client.normalizedBaseURL)
+        self.hostedAuthBaseURL =
+            hostedAuthBaseURL.map(OAuth42Client.normalizedBaseURL)
             ?? OAuth42Client.defaultHostedAuthBaseURL(for: issuer)
         self.scopes = scopes
         self.tokenStore = tokenStore
-        self.urlSession = urlSession
+        let sessionConfiguration = urlSession.configuration
+        sessionConfiguration.urlCache = nil
+        sessionConfiguration.httpCookieStorage = nil
+        sessionConfiguration.httpShouldSetCookies = false
+        sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.urlSession = URLSession(
+            configuration: sessionConfiguration, delegate: urlSession.delegate, delegateQueue: nil)
+        self.resourceOrigins = allowedResourceOrigins.filter {
+            (try? SecurityPolicy.httpsURL($0.absoluteString)) != nil && $0.query == nil
+                && ($0.path.isEmpty || $0.path == "/")
+        }.map(SecurityPolicy.origin)
         self.urlTransformer = urlTransformer
     }
 
@@ -74,7 +101,8 @@ public class OAuth42Client {
     private static func defaultHostedAuthBaseURL(for issuer: String) -> String {
         let normalizedIssuer = normalizedBaseURL(issuer)
         guard var components = URLComponents(string: normalizedIssuer),
-              let host = components.host else {
+            let host = components.host
+        else {
             return normalizedIssuer
         }
 
@@ -95,16 +123,14 @@ public class OAuth42Client {
 
     /// Fetch OIDC configuration from well-known endpoint
     public func fetchConfiguration() async throws -> OIDCConfiguration {
-        if let cached = configuration {
+        if let cached = synchronized({ configuration }) {
             return cached
         }
 
         let discoveryURL = issuer.appending("/.well-known/openid-configuration")
-        guard let url = URL(string: discoveryURL) else {
-            throw OAuth42Error.invalidURL(discoveryURL)
-        }
+        let url = try endpoint(discoveryURL)
 
-        let (data, response) = try await urlSession.data(from: url)
+        let (data, response) = try await send(URLRequest(url: url))
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -121,7 +147,17 @@ public class OAuth42Client {
 
         let decoder = JSONDecoder()
         let config = try decoder.decode(OIDCConfiguration.self, from: data)
-        self.configuration = config
+        guard config.issuer == issuer, config.responseTypesSupported.contains("code"),
+            config.idTokenSigningAlgValuesSupported.contains("RS256")
+        else {
+            throw OAuth42Error.invalidConfiguration("Discovery issuer or supported OIDC profile mismatch")
+        }
+        for value in [config.authorizationEndpoint, config.tokenEndpoint, config.jwksUri]
+            + [config.userinfoEndpoint].compactMap({ $0 })
+        {
+            _ = try endpoint(value)
+        }
+        synchronized { self.configuration = config }
         return config
     }
 
@@ -135,16 +171,13 @@ public class OAuth42Client {
     public func buildAuthorizationURL(state: String? = nil, nonce: String? = nil) async throws -> URL {
         let config = try await fetchConfiguration()
 
-        // Generate PKCE parameters
-        let pkce = try PKCEManager.generatePKCEPair()
-        self.currentPKCE = pkce
-
-        // Generate or use provided state
-        let stateValue = state ?? UUID().uuidString
-        self.currentState = stateValue
+        let transaction = try beginAuthorization(state: state, nonce: nonce)
+        let pkce = transaction.pkce
+        let stateValue = transaction.state
 
         // Build query parameters (transform URL for local development)
-        var components = URLComponents(string: transformURL(config.authorizationEndpoint))
+        var components = URLComponents(
+            url: try endpoint(config.authorizationEndpoint), resolvingAgainstBaseURL: false)
         var queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientId),
@@ -152,9 +185,9 @@ public class OAuth42Client {
             URLQueryItem(name: "scope", value: scopes.joined(separator: " ")),
             URLQueryItem(name: "state", value: stateValue),
             URLQueryItem(name: "code_challenge", value: pkce.codeChallenge),
-            URLQueryItem(name: "code_challenge_method", value: pkce.codeChallengeMethod)
+            URLQueryItem(name: "code_challenge_method", value: pkce.codeChallengeMethod),
         ]
-        if let nonce {
+        if let nonce = transaction.nonce {
             queryItems.append(URLQueryItem(name: "nonce", value: nonce))
         }
         components?.queryItems = queryItems
@@ -172,10 +205,13 @@ public class OAuth42Client {
     /// - Returns: Provider identifiers such as `google`, `github`, or `apple`.
     public func fetchHostedSocialProviders() async throws -> [String] {
         _ = try await fetchConfiguration()
+        _ = try SecurityPolicy.httpsURL(hostedAuthBaseURL)
 
-        guard var components = URLComponents(
-            string: hostedAuthBaseURL.appending("/api/social-providers")
-        ) else {
+        guard
+            var components = URLComponents(
+                string: hostedAuthBaseURL.appending("/api/social-providers")
+            )
+        else {
             throw OAuth42Error.invalidURL(hostedAuthBaseURL)
         }
         components.queryItems = [
@@ -189,7 +225,7 @@ public class OAuth42Client {
             throw OAuth42Error.invalidURL(providerURL.absoluteString)
         }
 
-        let (data, response) = try await urlSession.data(from: url)
+        let (data, response) = try await send(URLRequest(url: url))
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
         }
@@ -249,15 +285,16 @@ public class OAuth42Client {
         nonce: String? = nil
     ) async throws -> URL {
         _ = try await fetchConfiguration()
+        _ = try SecurityPolicy.httpsURL(hostedAuthBaseURL)
 
-        guard let url = URL(string: transformURL(hostedAuthBaseURL.appending("/api/social-auth/init"))) else {
+        guard let url = URL(string: transformURL(hostedAuthBaseURL.appending("/api/social-auth/init")))
+        else {
             throw OAuth42Error.invalidURL(hostedAuthBaseURL)
         }
 
-        let pkce = try PKCEManager.generatePKCEPair()
-        let stateValue = state ?? UUID().uuidString
-        self.currentPKCE = pkce
-        self.currentState = stateValue
+        let transaction = try beginAuthorization(state: state, nonce: nonce)
+        let pkce = transaction.pkce
+        let stateValue = transaction.state
 
         let payload = HostedSocialAuthInitRequest(
             provider: provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -267,7 +304,7 @@ public class OAuth42Client {
             scope: scopes.joined(separator: " "),
             codeChallenge: pkce.codeChallenge,
             codeChallengeMethod: pkce.codeChallengeMethod,
-            nonce: nonce,
+            nonce: transaction.nonce,
             isSignup: isSignup
         )
 
@@ -278,7 +315,7 @@ public class OAuth42Client {
         request.httpBody = try JSONEncoder().encode(payload)
 
         do {
-            let (data, response) = try await urlSession.data(for: request)
+            let (data, response) = try await send(request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw OAuth42Error.invalidResponse("Not an HTTP response")
             }
@@ -292,14 +329,11 @@ public class OAuth42Client {
             }
 
             let providerResponse = try JSONDecoder().decode(HostedSocialAuthInitResponse.self, from: data)
-            guard let authorizationURL = URL(string: providerResponse.authorizationURL) else {
-                throw OAuth42Error.hostedSocialAuthFailed("Invalid authorization_url in hosted social response")
-            }
-
+            let authorizationURL = try SecurityPolicy.httpsURL(providerResponse.authorizationURL)
+            guard synchronized({ pending?.state == stateValue }) else { throw OAuth42Error.invalidState }
             return authorizationURL
         } catch {
-            self.currentPKCE = nil
-            self.currentState = nil
+            synchronized { if pending?.state == stateValue { pending = nil } }
             throw error
         }
     }
@@ -317,7 +351,8 @@ public class OAuth42Client {
     ///   Defaults to the client's redirect URI.
     /// - Returns: Logout URL to open in a browser or web authentication session.
     public func buildProviderLogoutURL(redirectURI: String? = nil) throws -> URL {
-        guard var components = URLComponents(string: transformURL(issuer.appending("/auth/logout"))) else {
+        let logout = try endpoint(issuer.appending("/auth/logout"))
+        guard var components = URLComponents(url: logout, resolvingAgainstBaseURL: false) else {
             throw OAuth42Error.invalidURL("Failed to build provider logout URL")
         }
 
@@ -340,22 +375,13 @@ public class OAuth42Client {
     ///   - state: State parameter from redirect (for CSRF validation)
     /// - Returns: Token response with access_token, refresh_token, etc.
     public func exchangeCodeForTokens(code: String, state: String) async throws -> TokenResponse {
-        // Validate state to prevent CSRF
-        guard state == currentState else {
-            throw OAuth42Error.invalidState
-        }
-
-        guard let pkce = currentPKCE else {
-            throw OAuth42Error.tokenExchangeFailed("Missing PKCE verifier")
-        }
-
+        let (transaction, operation) = try consumeAuthorization(state: state)
+        defer { endOperation(operation) }
+        let pkce = transaction.pkce
         let config = try await fetchConfiguration()
 
         // Transform the URL for local development (e.g., localhost -> IP)
-        let transformedEndpoint = transformURL(config.tokenEndpoint)
-        guard let url = URL(string: transformedEndpoint) else {
-            throw OAuth42Error.invalidURL(transformedEndpoint)
-        }
+        let url = try endpoint(config.tokenEndpoint)
 
         // Build form parameters
         var parameters: [String: String] = [
@@ -363,7 +389,7 @@ public class OAuth42Client {
             "code": code,
             "redirect_uri": redirectURI,
             "client_id": clientId,
-            "code_verifier": pkce.codeVerifier
+            "code_verifier": pkce.codeVerifier,
         ]
 
         if let clientSecret = clientSecret {
@@ -372,14 +398,9 @@ public class OAuth42Client {
 
         let tokens = try await performTokenRequest(url: url, parameters: parameters)
 
-        // Store tokens if token store is configured
-        if let tokenStore = tokenStore {
-            try tokenStore.saveTokens(tokens)
-        }
-
-        // Clear PKCE and state after successful exchange
-        self.currentPKCE = nil
-        self.currentState = nil
+        try await validateIDToken(
+            tokens, config: config, nonce: transaction.nonce, required: scopes.contains("openid"))
+        try save(tokens, operation: operation)
 
         return tokens
     }
@@ -390,11 +411,13 @@ public class OAuth42Client {
     /// - Parameter refreshToken: The refresh token (optional, will use stored token if nil)
     /// - Returns: New token response
     public func refreshTokens(refreshToken: String? = nil) async throws -> TokenResponse {
+        let operation = try beginOperation()
+        defer { endOperation(operation) }
         let refreshTokenValue: String
 
         if let provided = refreshToken {
             refreshTokenValue = provided
-        } else if let stored = try tokenStore?.retrieveTokens()?.refreshToken {
+        } else if let stored = try getStoredTokens()?.refreshToken {
             refreshTokenValue = stored
         } else {
             throw OAuth42Error.missingRefreshToken
@@ -403,27 +426,35 @@ public class OAuth42Client {
         let config = try await fetchConfiguration()
 
         // Transform the URL for local development (e.g., localhost -> IP)
-        let transformedEndpoint = transformURL(config.tokenEndpoint)
-        guard let url = URL(string: transformedEndpoint) else {
-            throw OAuth42Error.invalidURL(transformedEndpoint)
-        }
+        let url = try endpoint(config.tokenEndpoint)
 
         var parameters: [String: String] = [
             "grant_type": "refresh_token",
             "refresh_token": refreshTokenValue,
-            "client_id": clientId
+            "client_id": clientId,
         ]
 
         if let clientSecret = clientSecret {
             parameters["client_secret"] = clientSecret
         }
 
-        let tokens = try await performTokenRequest(url: url, parameters: parameters)
-
-        // Store refreshed tokens
-        if let tokenStore = tokenStore {
-            try tokenStore.saveTokens(tokens)
+        let previous = try getStoredTokens()
+        let previousIDToken = previous?.idToken ?? synchronized { trustedIDToken }
+        let response = try await performTokenRequest(url: url, parameters: parameters)
+        try await validateIDToken(response, config: config, nonce: nil, required: false)
+        let previousSubject =
+            synchronized { trustedSubject } ?? previous?.idToken.flatMap(IDTokenValidator.storedSubject)
+        if let idToken = response.idToken, let previousSubject = previousSubject,
+            IDTokenValidator.storedSubject(idToken) != previousSubject
+        {
+            throw OAuth42Error.invalidResponse("Refresh changed the authenticated subject")
         }
+        let tokens = TokenResponse(
+            accessToken: response.accessToken, tokenType: response.tokenType,
+            expiresIn: response.expiresIn, refreshToken: response.refreshToken ?? refreshTokenValue,
+            scope: response.scope ?? previous?.scope, idToken: response.idToken ?? previousIDToken,
+            receivedAt: response.receivedAt)
+        try save(tokens, operation: operation)
 
         return tokens
     }
@@ -446,12 +477,12 @@ public class OAuth42Client {
         mfaCode: String? = nil,
         rememberMe: Bool = true
     ) async throws -> LoginResponse {
+        let operation = try beginOperation()
+        defer { endOperation(operation) }
         // Build login endpoint URL
         // The login endpoint is typically at /auth/login or /login
         let loginEndpoint = issuer.appending("/auth/login")
-        guard let url = URL(string: loginEndpoint) else {
-            throw OAuth42Error.invalidURL(loginEndpoint)
-        }
+        let url = try endpoint(loginEndpoint)
 
         // Create login request
         let loginRequest = LoginRequest(
@@ -470,19 +501,10 @@ public class OAuth42Client {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         request.httpBody = try encoder.encode(loginRequest)
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await send(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
-        }
-
-        // Debug logging
-        print("🔍 [OAuth42Client] Response status: \(httpResponse.statusCode)")
-        print("🔍 [OAuth42Client] Response headers: \(httpResponse.allHeaderFields)")
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("🔍 [OAuth42Client] Response body: \(responseString)")
-        } else {
-            print("❌ [OAuth42Client] Could not decode response body as UTF-8")
         }
 
         // Handle different response codes
@@ -494,7 +516,6 @@ public class OAuth42Client {
             // already have explicit CodingKeys that handle snake_case mapping
             decoder.dateDecodingStrategy = .iso8601
 
-            print("🔍 [OAuth42Client] Attempting to decode LoginResponse...")
             var loginResponse = try decoder.decode(LoginResponse.self, from: data)
 
             // Ensure receivedAt is set to current time
@@ -506,10 +527,7 @@ public class OAuth42Client {
                 receivedAt: Date()
             )
 
-            // Store tokens if token store is configured
-            if let tokenStore = tokenStore {
-                try tokenStore.saveTokens(loginResponse.toTokenResponse())
-            }
+            try save(loginResponse.toTokenResponse(), operation: operation)
 
             return loginResponse
 
@@ -525,7 +543,8 @@ public class OAuth42Client {
 
             // Try to decode as standard error
             if let errorResponse = try? decoder.decode(OAuth2ErrorResponse.self, from: data) {
-                throw OAuth42Error.invalidCredentials(errorResponse.errorDescription ?? "Invalid email or password")
+                throw OAuth42Error.invalidCredentials(
+                    errorResponse.errorDescription ?? "Invalid email or password")
             }
 
             throw OAuth42Error.invalidCredentials("Authentication failed")
@@ -534,7 +553,8 @@ public class OAuth42Client {
             // Other errors
             let decoder = JSONDecoder()
             if let errorResponse = try? decoder.decode(OAuth2ErrorResponse.self, from: data) {
-                throw OAuth42Error.loginFailed("\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
+                throw OAuth42Error.loginFailed(
+                    "\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
             }
             throw OAuth42Error.loginFailed("HTTP \(httpResponse.statusCode)")
         }
@@ -544,9 +564,7 @@ public class OAuth42Client {
     /// - Returns: MFA status information
     public func getMFAStatus() async throws -> MFAStatus {
         let mfaStatusEndpoint = issuer.appending("/auth/mfa/status")
-        guard let url = URL(string: mfaStatusEndpoint) else {
-            throw OAuth42Error.invalidURL(mfaStatusEndpoint)
-        }
+        let url = try endpoint(mfaStatusEndpoint)
 
         let (data, response) = try await makeAuthenticatedRequest(url: url)
 
@@ -575,10 +593,7 @@ public class OAuth42Client {
         }
 
         // Transform the URL for local development (e.g., localhost -> IP)
-        let transformedEndpoint = transformURL(userinfoEndpoint)
-        guard let url = URL(string: transformedEndpoint) else {
-            throw OAuth42Error.invalidURL(transformedEndpoint)
-        }
+        let url = try endpoint(userinfoEndpoint)
 
         // Get the access token to use
         var accessTokenValue: String
@@ -598,7 +613,7 @@ public class OAuth42Client {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(accessTokenValue)", forHTTPHeaderField: "Authorization")
 
-        var (data, response) = try await urlSession.data(for: request)
+        var (data, response) = try await send(request)
 
         guard var httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -614,7 +629,7 @@ public class OAuth42Client {
 
                     // Retry with refreshed token
                     request.setValue("Bearer \(accessTokenValue)", forHTTPHeaderField: "Authorization")
-                    (data, response) = try await urlSession.data(for: request)
+                    (data, response) = try await send(request)
 
                     guard let retryResponse = response as? HTTPURLResponse else {
                         throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -622,7 +637,8 @@ public class OAuth42Client {
                     httpResponse = retryResponse
                 } catch {
                     // Refresh failed, throw original 401 error
-                    throw OAuth42Error.invalidResponse("HTTP 401 (token refresh failed: \(error.localizedDescription))")
+                    throw OAuth42Error.invalidResponse(
+                        "HTTP 401 (token refresh failed: \(error.localizedDescription))")
                 }
             }
         }
@@ -632,19 +648,35 @@ public class OAuth42Client {
         }
 
         let decoder = JSONDecoder()
-        return try decoder.decode(UserInfo.self, from: data)
+        let user = try decoder.decode(UserInfo.self, from: data)
+        let stored = try getStoredTokens()
+        let expected =
+            synchronized { trustedAccessToken == accessTokenValue ? trustedSubject : nil }
+            ?? (stored?.accessToken == accessTokenValue
+                ? stored?.idToken.flatMap(IDTokenValidator.storedSubject) : nil)
+        if let expected = expected, user.id != expected {
+            throw OAuth42Error.invalidResponse("Userinfo subject does not match the ID token")
+        }
+        return user
     }
 
     // MARK: - Token Management
 
     /// Get stored tokens if available
     public func getStoredTokens() throws -> TokenResponse? {
-        return try tokenStore?.retrieveTokens()
+        return try synchronized { try tokenStore?.retrieveTokens() }
     }
 
     /// Clear stored tokens
     public func clearTokens() throws {
-        try tokenStore?.deleteTokens()
+        try synchronized {
+            generation = UUID()
+            pending = nil
+            trustedSubject = nil
+            trustedIDToken = nil
+            trustedAccessToken = nil
+            try tokenStore?.deleteTokens()
+        }
     }
 
     /// Get valid access token, refreshing if necessary
@@ -677,6 +709,14 @@ public class OAuth42Client {
         method: String = "GET",
         body: Data? = nil
     ) async throws -> (Data, HTTPURLResponse) {
+        _ = try SecurityPolicy.httpsURL(url.absoluteString)
+        let origin = SecurityPolicy.origin(url)
+        guard
+            origin == SecurityPolicy.origin(try SecurityPolicy.httpsURL(transformURL(issuer)))
+                || resourceOrigins.contains(origin)
+        else {
+            throw OAuth42Error.invalidURL("Resource origin is not authorized to receive access tokens")
+        }
         let accessToken = try await getValidAccessToken()
 
         var request = URLRequest(url: url)
@@ -688,7 +728,7 @@ public class OAuth42Client {
             request.httpBody = body
         }
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await send(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -699,23 +739,130 @@ public class OAuth42Client {
 
     // MARK: - Private Helpers
 
-    private func performTokenRequest(url: URL, parameters: [String: String]) async throws -> TokenResponse {
+    deinit { urlSession.invalidateAndCancel() }
+
+    private func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
+    private func endpoint(_ value: String) throws -> URL {
+        _ = try SecurityPolicy.endpoint(value, issuer: issuer)
+        return try SecurityPolicy.endpoint(transformURL(value), issuer: transformURL(issuer))
+    }
+
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let url = request.url else { throw OAuth42Error.invalidURL("Missing URL") }
+        _ = try SecurityPolicy.httpsURL(url.absoluteString)
+        var request = request
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        return try await urlSession.data(for: request, delegate: redirectDelegate)
+    }
+
+    private func beginAuthorization(state: String?, nonce: String?) throws -> Authorization {
+        let transaction = Authorization(
+            pkce: try PKCEManager.generatePKCEPair(),
+            state: state ?? UUID().uuidString,
+            nonce: nonce ?? (scopes.contains("openid") ? UUID().uuidString : nil), created: authorizationNow())
+        return try synchronized {
+            guard activeOperation == nil,
+                pending == nil || authorizationNow().timeIntervalSince(pending!.created) > 600,
+                !transaction.state.isEmpty, transaction.nonce?.isEmpty != true
+            else {
+                throw OAuth42Error.authorizationFailed(
+                    "A login is already pending or the state/nonce is empty; clearTokens cancels pending login"
+                )
+            }
+            pending = transaction
+            return transaction
+        }
+    }
+
+    private func consumeAuthorization(state: String) throws -> (Authorization, UUID) {
+        try synchronized {
+            guard activeOperation == nil, let transaction = pending, transaction.state == state,
+                authorizationNow().timeIntervalSince(transaction.created) <= 600
+            else { throw OAuth42Error.invalidState }
+            pending = nil  // Single use, including failed exchanges.
+            activeOperation = generation
+            return (transaction, generation)
+        }
+    }
+
+    private func beginOperation() throws -> UUID {
+        try synchronized {
+            guard activeOperation == nil else {
+                throw OAuth42Error.authorizationFailed("A token operation is already in progress")
+            }
+            activeOperation = generation
+            return generation
+        }
+    }
+
+    private func endOperation(_ operation: UUID) {
+        synchronized { if activeOperation == operation { activeOperation = nil } }
+    }
+
+    private func save(_ tokens: TokenResponse, operation: UUID) throws {
+        try Task.checkCancellation()
+        try SecurityPolicy.validate(tokens)
+        try synchronized {
+            guard generation == operation else {
+                throw OAuth42Error.authorizationFailed("Session was cleared during authentication")
+            }
+            try tokenStore?.saveTokens(tokens)
+            trustedSubject = tokens.idToken.flatMap(IDTokenValidator.storedSubject)
+            trustedIDToken = tokens.idToken
+            trustedAccessToken = tokens.accessToken
+        }
+    }
+
+    private func validateIDToken(
+        _ tokens: TokenResponse, config: OIDCConfiguration, nonce: String?, required: Bool
+    ) async throws {
+        guard let token = tokens.idToken else {
+            if required { throw OAuth42Error.invalidResponse("Missing OpenID Connect ID token") }
+            return
+        }
+        let (data, response) = try await send(URLRequest(url: endpoint(config.jwksUri)))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw OAuth42Error.invalidResponse("Could not fetch issuer signing keys")
+        }
+        try IDTokenValidator.validate(
+            token, jwks: data, issuer: issuer, clientID: clientId, nonce: nonce,
+            accessToken: tokens.accessToken)
+    }
+
+    private func performTokenRequest(url: URL, parameters: [String: String]) async throws
+        -> TokenResponse
+    {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
         // Build form body
-        let formBody = parameters
+        let formBody =
+            parameters
             .map { key, value in
-                let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? key
-                let encodedValue = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+                let encodedKey =
+                    key.addingPercentEncoding(
+                        withAllowedCharacters: CharacterSet(
+                            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))
+                    ?? key
+                let encodedValue =
+                    value.addingPercentEncoding(
+                        withAllowedCharacters: CharacterSet(
+                            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))
+                    ?? value
                 return "\(encodedKey)=\(encodedValue)"
             }
             .joined(separator: "&")
 
         request.httpBody = formBody.data(using: .utf8)
 
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await send(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -724,7 +871,8 @@ public class OAuth42Client {
         // Check for error response
         if httpResponse.statusCode != 200 {
             if let errorResponse = try? JSONDecoder().decode(OAuth2ErrorResponse.self, from: data) {
-                throw OAuth42Error.tokenExchangeFailed("\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
+                throw OAuth42Error.tokenExchangeFailed(
+                    "\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
             }
             throw OAuth42Error.tokenExchangeFailed("HTTP \(httpResponse.statusCode)")
         }
@@ -744,6 +892,7 @@ public class OAuth42Client {
             receivedAt: Date()
         )
 
+        try SecurityPolicy.validate(tokenResponse)
         return tokenResponse
     }
 
@@ -761,7 +910,8 @@ public class OAuth42Client {
 
     private func hostedSocialError(statusCode: Int, data: Data, fallback: String) -> OAuth42Error {
         if let errorResponse = try? JSONDecoder().decode(OAuth2ErrorResponse.self, from: data) {
-            return .hostedSocialAuthFailed("\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
+            return .hostedSocialAuthFailed(
+                "\(errorResponse.error): \(errorResponse.errorDescription ?? "Unknown error")")
         }
 
         if statusCode == 404 {

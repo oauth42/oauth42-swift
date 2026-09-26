@@ -14,7 +14,7 @@ A comprehensive Swift SDK for integrating OAuth42 authentication into iOS, macOS
 - ✅ **Secure Keychain Storage** - encrypted token persistence
 - ✅ **OpenID Connect Support** - full OIDC discovery and UserInfo
 - ✅ **Modern Swift** - async/await, Codable, and type-safe APIs
-- ✅ **Cross-Platform** - iOS 14+, macOS 11+, tvOS 14+, watchOS 7+
+- ✅ **Cross-Platform** - iOS 15+, macOS 12+, tvOS 15+, watchOS 8+
 - ✅ **Zero Dependencies** - pure Swift implementation
 
 ## Installation
@@ -193,7 +193,7 @@ func handleCallback(callbackURL: URL?, error: Error?) async {
     do {
         // Exchange code for tokens
         let tokens = try await client.exchangeCodeForTokens(code: code, state: state)
-        print("Authentication successful! Access token: \(tokens.accessToken)")
+        print("Authentication successful")
 
         // Fetch user info
         let userInfo = try await client.fetchUserInfo()
@@ -263,7 +263,7 @@ do {
     )
 
     print("Logged in as: \(loginResponse.user.email)")
-    print("Access token: \(loginResponse.accessToken)")
+    // Tokens remain in the configured secure TokenStore.
 
 } catch OAuth42Error.mfaRequired(let message) {
     // MFA is enabled, need to prompt for code
@@ -398,7 +398,7 @@ let userInfo = try await client.fetchUserInfo()
 ```swift
 // Manually refresh tokens
 let newTokens = try await client.refreshTokens()
-print("New access token: \(newTokens.accessToken)")
+print("Session refreshed")
 ```
 
 #### Get Valid Access Token
@@ -698,10 +698,10 @@ print("Supported scopes: \(config.scopesSupported ?? [])")
 
 ## Requirements
 
-- **iOS**: 14.0+
-- **macOS**: 11.0+
-- **tvOS**: 14.0+
-- **watchOS**: 7.0+
+- **iOS**: 15.0+
+- **macOS**: 12.0+
+- **tvOS**: 15.0+
+- **watchOS**: 8.0+
 - **Swift**: 5.7+
 - **Xcode**: 14.0+
 
@@ -716,10 +716,13 @@ print("Supported scopes: \(config.scopesSupported ?? [])")
 
 ## Testing
 
-The SDK includes comprehensive test coverage:
+The SDK includes unit, adversarial, Keychain, and real HTTPS transport tests:
 
 ```bash
-# Run all tests
+# Run macOS and iOS simulator tests
+make test
+
+# Run macOS tests only
 swift test
 
 # Run specific test
@@ -731,7 +734,8 @@ Test categories:
 - PKCE generation and validation
 - Keychain storage operations
 - Token expiration logic
-- Integration tests (require running OAuth42 backend)
+- Real HTTPS integration tests with isolated local fixtures (macOS; Python 3 and OpenSSL required)
+- Adversarial OIDC, redirect, callback replay, logout race, and Keychain regression tests
 
 ## Examples
 
@@ -741,15 +745,25 @@ See the [Examples](Examples/) directory for complete sample applications:
 
 ## Troubleshooting
 
-### "Backend not running" in tests
+### Security and test configuration
 
-Integration tests require a running OAuth42 backend:
+See [the security audit](docs/SECURITY_AUDIT.md) for findings, regression coverage, platform boundaries, and compatibility changes. `swift test` starts its own HTTPS fixtures on macOS; it does not require a running OAuth42 backend.
 
-```bash
-cd ~/localdev/oauth42
-make up-local-dev-ssl
-make run-local-oauth42
+The SDK requires HTTPS and issuer-origin OIDC endpoints. ID-token validation requires RS256 and a matching nonce for OpenID login. Pending authorization is single-use and expires after ten minutes. Overlapping token operations fail explicitly; await the current operation before retrying.
+
+Custom bearer requests default to the issuer origin. Authorize another API explicitly:
+
+```swift
+let client = OAuth42Client(
+    clientId: "YOUR_CLIENT_ID",
+    redirectURI: "myapp://oauth-callback",
+    issuer: "https://api.oauth42.com",
+    tokenStore: KeychainTokenStore(service: "com.example.myapp"),
+    allowedResourceOrigins: [URL(string: "https://api.example.com")!]
+)
 ```
+
+Do not embed confidential-client secrets in distributed apps. Do not log tokens or install a TLS delegate that accepts untrusted certificates. Mobile Keychain tokens use `WhenUnlockedThisDeviceOnly`; the macOS login Keychain uses its platform ACL and unlock policy.
 
 ### Keychain access errors
 
