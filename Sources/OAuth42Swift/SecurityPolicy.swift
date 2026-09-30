@@ -34,12 +34,12 @@ enum SecurityPolicy {
         return url
     }
 
-    static func validate(_ tokens: TokenResponse) throws {
-        guard !tokens.accessToken.isEmpty, tokens.tokenType.lowercased() == "bearer",
+    static func validate(_ tokens: TokenResponse, expectedType: String = "bearer") throws {
+        guard !tokens.accessToken.isEmpty, tokens.tokenType.lowercased() == expectedType,
             tokens.expiresIn > 0, tokens.refreshToken?.isEmpty != true,
             !tokens.accessToken.contains(where: { $0.isWhitespace || $0.isNewline })
         else {
-            throw OAuth42Error.invalidResponse("Invalid bearer token response")
+            throw OAuth42Error.invalidResponse("Invalid token response or sender-binding downgrade")
         }
     }
 }

@@ -65,3 +65,9 @@ URLSession API it uses. The manifest now requires iOS 15, macOS 12, watchOS 8
 and tvOS 15. Consumers targeting earlier versions must raise their deployment
 target before updating. This makes the supported platform boundary explicit;
 macOS and iOS simulator tests do not establish watchOS/tvOS runtime coverage.
+
+## September 30: DPoP work in progress
+
+The SDK now supports optional RFC 9449 ES256 proofs for standard OAuth token and resource requests. Nonce retries are bounded to one retry, with a fresh proof ID. Token-type downgrade and persisted-key mismatch fail closed. `DPoPKeyStore` explicitly separates loading an existing session key from creating a key for fresh authentication; it prefers Secure Enclave and requires explicit software fallback. Keychain storage is nonsynchronizing and device-only. Use an installation-specific service because Keychain items can survive uninstall. Logout clears tokens; key deletion is a separate operation that requires discarding clients holding the old key.
+
+Native macOS evidence: 55 tests pass; iOS simulator: 52 tests pass, including real Keychain lifecycle and cryptographic/HTTP-adapter regressions. Physical Secure Enclave and application reinstall/migration evidence remains open. Custom password/authenticator login does not yet support DPoP. No deployment or full MASVS/ASVS conformance is claimed. Backend and remaining acceptance criteria: https://github.com/oauth42/oauth42/issues/632.

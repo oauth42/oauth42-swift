@@ -3,6 +3,8 @@ import Foundation
 /// OAuth2 Token Response
 /// Corresponds to token_response.schema.json
 public struct TokenResponse: Codable {
+    /// Local key identity, persisted with the session; never trusted from server JSON.
+    public var dpopKeyThumbprint: String?
     public let accessToken: String
     public let tokenType: String
     public let expiresIn: Int
@@ -34,6 +36,7 @@ public struct TokenResponse: Codable {
         case refreshToken = "refresh_token"
         case scope
         case idToken = "id_token"
+        case dpopKeyThumbprint = "dpop_key_thumbprint"
         case receivedAt = "received_at"  // Client-side timestamp for token expiration tracking
     }
 
@@ -53,6 +56,7 @@ public struct TokenResponse: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
+        dpopKeyThumbprint = try container.decodeIfPresent(String.self, forKey: .dpopKeyThumbprint)
         accessToken = try container.decode(String.self, forKey: .accessToken)
         tokenType = try container.decode(String.self, forKey: .tokenType)
         expiresIn = try container.decode(Int.self, forKey: .expiresIn)
@@ -70,6 +74,7 @@ public struct TokenResponse: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
+        try container.encodeIfPresent(dpopKeyThumbprint, forKey: .dpopKeyThumbprint)
         try container.encode(accessToken, forKey: .accessToken)
         try container.encode(tokenType, forKey: .tokenType)
         try container.encode(expiresIn, forKey: .expiresIn)

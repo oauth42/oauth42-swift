@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		06697A8AE6525C535E73606D /* SecurityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 941997AD3AEF4AD0E873DCEB /* SecurityPolicy.swift */; };
+		1837DC41537548F58003DF20 /* DPoP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ECB1123A4C44898AD5A0EAF /* DPoP.swift */; };
 		0E17DBB1F68DA0D52171BBA1 /* UserInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3008011BEC0FDB36596E5205 /* UserInfo.swift */; };
 		18212C3B72185CD487D0A345 /* OAuth42Client+WebAuthentication.swift in Sources */ = {isa = PBXBuildFile; fileRef = F531E29A207C7B4370DABA89 /* OAuth42Client+WebAuthentication.swift */; };
 		1DE2B18B32E5F005A289A90E /* OIDCConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 367A11A54095783A26620698 /* OIDCConfiguration.swift */; };
@@ -19,6 +20,7 @@
 		6ED25D167730FBCA3093931C /* PKCEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1B30243B317670078234E4 /* PKCEManager.swift */; };
 		73A9D283063EAF1A4A65D672 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F78ED0139A7833F61E3371B2 /* Foundation.framework */; };
 		778A799A5211B4D58057C37A /* SecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48CCB7B9203A0C43F7FBD09 /* SecurityTests.swift */; };
+		E4EAE26768FF44A48D31F0F2 /* DPoPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0396EBB9D5247E59FF40E3F /* DPoPTests.swift */; };
 		8035E6F4FC49EDF183367126 /* MFAError.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEF584C2B4D39B01D06D67CC /* MFAError.swift */; };
 		82A06C41B3407590447996BC /* TokenResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44C11DEE8EA6582EA54DB0B0 /* TokenResponse.swift */; };
 		82C502986D824BE22AAE00CC /* LoginResponse.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA414E4CE867FC1454CFDAB1 /* LoginResponse.swift */; };
@@ -89,11 +91,13 @@
 		6E9210A1F1179AC60E6D8EBE /* LoginRequest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LoginRequest.swift; path = ../../Sources/OAuth42Swift/Models/LoginRequest.swift; sourceTree = "<group>"; };
 		8FEDD9EC12E3A409E25FAABD /* TokenStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TokenStore.swift; path = ../../Sources/OAuth42Swift/Storage/TokenStore.swift; sourceTree = "<group>"; };
 		941997AD3AEF4AD0E873DCEB /* SecurityPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SecurityPolicy.swift; path = ../../Sources/OAuth42Swift/SecurityPolicy.swift; sourceTree = "<group>"; };
+		5ECB1123A4C44898AD5A0EAF /* DPoP.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DPoP.swift; path = ../../Sources/OAuth42Swift/DPoP.swift; sourceTree = "<group>"; };
 		A19A79B90145E8C95C6292C7 /* OAuth42SwiftTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OAuth42SwiftTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA098419E16847B9945DE068 /* KeychainTokenStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainTokenStore.swift; path = ../../Sources/OAuth42Swift/Storage/KeychainTokenStore.swift; sourceTree = "<group>"; };
 		C0304A7C4D3C56DC5CB61155 /* OAuth42Client.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OAuth42Client.swift; path = ../../Sources/OAuth42Swift/OAuth42Client.swift; sourceTree = "<group>"; };
 		CD7DB20792E1E862F9644231 /* SecurityTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SecurityTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D48CCB7B9203A0C43F7FBD09 /* SecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SecurityTests.swift; path = ../../Tests/OAuth42SwiftTests/SecurityTests.swift; sourceTree = "<group>"; };
+		E0396EBB9D5247E59FF40E3F /* DPoPTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DPoPTests.swift; path = ../../Tests/OAuth42SwiftTests/DPoPTests.swift; sourceTree = "<group>"; };
 		DD1B30243B317670078234E4 /* PKCEManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PKCEManager.swift; path = ../../Sources/OAuth42Swift/PKCE/PKCEManager.swift; sourceTree = "<group>"; };
 		DEF584C2B4D39B01D06D67CC /* MFAError.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MFAError.swift; path = ../../Sources/OAuth42Swift/Models/MFAError.swift; sourceTree = "<group>"; };
 		EA414E4CE867FC1454CFDAB1 /* LoginResponse.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LoginResponse.swift; path = ../../Sources/OAuth42Swift/Models/LoginResponse.swift; sourceTree = "<group>"; };
@@ -150,6 +154,7 @@
 				2196B51F491C3E3D3969D45C /* OAuth42Swift.swift */,
 				DD1B30243B317670078234E4 /* PKCEManager.swift */,
 				941997AD3AEF4AD0E873DCEB /* SecurityPolicy.swift */,
+				5ECB1123A4C44898AD5A0EAF /* DPoP.swift */,
 				BA098419E16847B9945DE068 /* KeychainTokenStore.swift */,
 				8FEDD9EC12E3A409E25FAABD /* TokenStore.swift */,
 				6403C14B2E069E03BB2FD61E /* IntegrationTests.swift */,
@@ -157,6 +162,7 @@
 				2E435795EF925C610652F54E /* OAuth42ClientTests.swift */,
 				6095068BA5A67201137C1591 /* PasswordAuthTests.swift */,
 				D48CCB7B9203A0C43F7FBD09 /* SecurityTests.swift */,
+				E0396EBB9D5247E59FF40E3F /* DPoPTests.swift */,
 				F2E41623020947F04471F501 /* SecurityTestHost.swift */,
 			);
 			sourceTree = "<group>";
@@ -337,6 +343,7 @@
 				9CCC1B3877C104CDE2F6EAE2 /* OAuth42Swift.swift in Sources */,
 				6ED25D167730FBCA3093931C /* PKCEManager.swift in Sources */,
 				06697A8AE6525C535E73606D /* SecurityPolicy.swift in Sources */,
+				1837DC41537548F58003DF20 /* DPoP.swift in Sources */,
 				FF85A42395414D7E4456EF4A /* KeychainTokenStore.swift in Sources */,
 				37EA575C8E7C1CE90A8A0F0A /* TokenStore.swift in Sources */,
 			);
@@ -351,6 +358,7 @@
 				F4337EAD2CBF86A7D68B2DDD /* OAuth42ClientTests.swift in Sources */,
 				63F6B8AFF506AA387EF29BE7 /* PasswordAuthTests.swift in Sources */,
 				778A799A5211B4D58057C37A /* SecurityTests.swift in Sources */,
+				E4EAE26768FF44A48D31F0F2 /* DPoPTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -816,3 +816,29 @@ This SDK is available under the MIT license. See the LICENSE file for more info.
 - **OAuth42 TypeScript SDK** - TypeScript/JavaScript client library
 
 ---
+
+### DPoP (optional)
+
+For standard authorization-code and refresh flows, pass a retained installation key:
+
+```swift
+let keys = DPoPKeyStore(service: "your.app.installation.\(installationID)")
+// Resume: load only. If this returns nil while tokens exist, clear them and sign in again.
+let key = try keys.load()
+let client = OAuth42Client(
+    clientId: clientID, redirectURI: redirectURI, issuer: issuer,
+    tokenStore: tokenStore, dpopKey: key)
+```
+
+For a **fresh** sign-in, call `keys.create()` first if no key exists. Creation prefers
+Secure Enclave and fails when it is unavailable unless
+`allowSoftwareFallback: true` is explicitly chosen. Keep the random installation
+identifier outside Keychain so reinstall does not reuse an old installation's key.
+Do not create a new key to recover an existing refresh grant. Device migration or
+key loss requires reauthentication. `clearTokens()` retains the installation key;
+when deleting the key, also discard client instances holding it.
+
+Proofs, nonce retries, and the `DPoP` authorization scheme are handled automatically.
+A bearer response while DPoP is configured is rejected. Custom password/authenticator
+login does not support this option yet. DPoP proves key possession; it does not by
+itself attest the device or protect against a compromised process able to sign.

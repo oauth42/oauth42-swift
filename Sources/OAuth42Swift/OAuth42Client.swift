@@ -2,6 +2,7 @@ import Foundation
 
 /// Main OAuth42 client for handling authentication flows
 public class OAuth42Client {
+    private let dpopKey: DPoPKey?
     private let clientId: String
     private let clientSecret: String?
     private let redirectURI: String
@@ -58,8 +59,10 @@ public class OAuth42Client {
         tokenStore: TokenStore? = nil,
         urlSession: URLSession = .shared,
         allowedResourceOrigins: [URL] = [],
-        urlTransformer: ((String) -> String)? = nil
+        urlTransformer: ((String) -> String)? = nil,
+        dpopKey: DPoPKey? = nil
     ) {
+        self.dpopKey = dpopKey
         self.clientId = clientId
         self.clientSecret = clientSecret
         self.redirectURI = redirectURI
@@ -477,6 +480,9 @@ public class OAuth42Client {
         mfaCode: String? = nil,
         rememberMe: Bool = true
     ) async throws -> LoginResponse {
+        guard dpopKey == nil else {
+            throw OAuth42Error.invalidConfiguration("DPoP requires the standard authorization-code flow")
+        }
         let operation = try beginOperation()
         defer { endOperation(operation) }
         // Build login endpoint URL
@@ -664,7 +670,14 @@ public class OAuth42Client {
 
     /// Get stored tokens if available
     public func getStoredTokens() throws -> TokenResponse? {
-        return try synchronized { try tokenStore?.retrieveTokens() }
+        return try synchronized {
+            guard let tokens = try tokenStore?.retrieveTokens() else { return nil }
+            try SecurityPolicy.validate(tokens, expectedType: dpopKey == nil ? "bearer" : "dpop")
+            guard tokens.dpopKeyThumbprint == dpopKey?.thumbprint else {
+                throw OAuth42Error.authorizationFailed("The session signing key is missing or changed; sign in again")
+            }
+            return tokens
+        }
     }
 
     /// Clear stored tokens
@@ -752,13 +765,29 @@ public class OAuth42Client {
         return try SecurityPolicy.endpoint(transformURL(value), issuer: transformURL(issuer))
     }
 
-    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    private func send(_ request: URLRequest, tokenEndpoint: Bool = false) async throws -> (Data, URLResponse) {
         guard let url = request.url else { throw OAuth42Error.invalidURL("Missing URL") }
         _ = try SecurityPolicy.httpsURL(url.absoluteString)
         var request = request
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        return try await urlSession.data(for: request, delegate: redirectDelegate)
+        let bearer = request.value(forHTTPHeaderField: "Authorization").flatMap { $0.hasPrefix("Bearer ") ? String($0.dropFirst(7)) : nil }
+        guard let key = dpopKey, tokenEndpoint || bearer != nil else {
+            return try await urlSession.data(for: request, delegate: redirectDelegate)
+        }
+        let nonceScope = SecurityPolicy.origin(url) + (tokenEndpoint ? "/AS" : "/RS")
+        for attempt in 0...1 {
+            request.setValue(try key.proof(method: request.httpMethod ?? "GET", url: url,
+                nonce: key.nonce(for: nonceScope), accessToken: bearer), forHTTPHeaderField: "DPoP")
+            if let bearer = bearer { request.setValue("DPoP \(bearer)", forHTTPHeaderField: "Authorization") }
+            let result = try await urlSession.data(for: request, delegate: redirectDelegate)
+            guard let response = result.1 as? HTTPURLResponse else { return result }
+            let hasNonce = key.remember(response.value(forHTTPHeaderField: "DPoP-Nonce"), for: nonceScope)
+            let error = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any]
+            if attempt == 0 && [400, 401].contains(response.statusCode) && hasNonce && error?["error"] as? String == "use_dpop_nonce" { continue }
+            return result
+        }
+        throw OAuth42Error.invalidResponse("DPoP nonce retry exhausted")
     }
 
     private func beginAuthorization(state: String?, nonce: String?) throws -> Authorization {
@@ -807,7 +836,9 @@ public class OAuth42Client {
 
     private func save(_ tokens: TokenResponse, operation: UUID) throws {
         try Task.checkCancellation()
-        try SecurityPolicy.validate(tokens)
+        try SecurityPolicy.validate(tokens, expectedType: dpopKey == nil ? "bearer" : "dpop")
+        var tokens = tokens
+        tokens.dpopKeyThumbprint = dpopKey?.thumbprint
         try synchronized {
             guard generation == operation else {
                 throw OAuth42Error.authorizationFailed("Session was cleared during authentication")
@@ -862,7 +893,7 @@ public class OAuth42Client {
 
         request.httpBody = formBody.data(using: .utf8)
 
-        let (data, response) = try await send(request)
+        let (data, response) = try await send(request, tokenEndpoint: true)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -892,7 +923,8 @@ public class OAuth42Client {
             receivedAt: Date()
         )
 
-        try SecurityPolicy.validate(tokenResponse)
+        tokenResponse.dpopKeyThumbprint = dpopKey?.thumbprint
+        try SecurityPolicy.validate(tokenResponse, expectedType: dpopKey == nil ? "bearer" : "dpop")
         return tokenResponse
     }
 
