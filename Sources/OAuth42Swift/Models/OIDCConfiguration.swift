@@ -5,6 +5,8 @@ import Foundation
 public struct OIDCConfiguration: Codable {
     public let issuer: String
     public let authorizationEndpoint: String
+    public let pushedAuthorizationRequestEndpoint: String?
+    public let requirePushedAuthorizationRequests: Bool?
     public let tokenEndpoint: String
     public let userinfoEndpoint: String?
     public let jwksUri: String
@@ -23,6 +25,8 @@ public struct OIDCConfiguration: Codable {
     enum CodingKeys: String, CodingKey {
         case issuer
         case authorizationEndpoint = "authorization_endpoint"
+        case pushedAuthorizationRequestEndpoint = "pushed_authorization_request_endpoint"
+        case requirePushedAuthorizationRequests = "require_pushed_authorization_requests"
         case tokenEndpoint = "token_endpoint"
         case userinfoEndpoint = "userinfo_endpoint"
         case jwksUri = "jwks_uri"

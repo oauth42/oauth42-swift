@@ -839,6 +839,33 @@ key loss requires reauthentication. `clearTokens()` retains the installation key
 when deleting the key, also discard client instances holding it.
 
 Proofs, nonce retries, and the `DPoP` authorization scheme are handled automatically.
-A bearer response while DPoP is configured is rejected. Custom password/authenticator
-login does not support this option yet. DPoP proves key possession; it does not by
+A bearer response while DPoP is configured is rejected. Password login and refresh preserve the proof binding and local grant routing. DPoP proves key possession; it does not by
 itself attest the device or protect against a compromised process able to sign.
+
+### Pushed authorization and password-session refresh
+
+Call `buildAuthorizationURL(pushedAuthorization: true)` before opening the system
+browser when the client requires PAR. Discovery requiring PAR also enables it.
+The SDK retains state, nonce and S256 PKCE locally, pushes the request with its
+retained DPoP key, and returns an opaque request reference. Errors never fall back
+to an ordinary authorization redirect. Complete the existing callback with the
+returned code/state; ID-token signature, issuer, audience and nonce checks remain
+required. PAR references expire after the server's short transaction window.
+
+DPoP now supports password login and `/auth/refresh` as well as the standard OAuth
+flow. The token store persists the local grant type and proof-key thumbprint so
+refresh uses the correct endpoint after a restart. Missing/replaced keys and
+Bearer response downgrades fail closed; successful refresh never creates a new
+proof key. Public native clients still are not confidential clients.
+
+Run `swift test` and `scripts/test-ios.sh` on the local Mac. To verify the actual
+O42 backend, run `scripts/test-swift-backend.py` from the companion OAuth42 checkout
+with `O42_RUST_CI_CACHE_DIR` set outside that checkout. Its AL2023 fixture and local
+Swift test cover trusted TLS, PAR/code/PKCE/nonce, userinfo, refresh, password grant
+routing and wrong-key refresh denial. Apple jobs must not run in GitHub Actions.
+
+Apple verification runs on the owner's Mac only. The GitHub macOS workflow has
+been removed per the October 14 testing policy; pushing a branch or opening a PR
+must not start hosted Apple jobs. Before merging SDK security changes, run the
+local macOS/simulator checks and the real-backend bridge documented above, and
+record their results in the PR.

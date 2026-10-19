@@ -94,6 +94,71 @@ final class DPoPTests: XCTestCase {
         try client.clearTokens()
         XCTAssertNil(try client.getStoredTokens())
     }
+    func testPARUsesOpaqueReferenceAndKeepsPKCEAndNonceOnServer() async throws {
+        let (key, publicKey) = key()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DPoPProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel(); DPoPProtocol.handler = nil }
+        let client = OAuth42Client(clientId: "native", redirectURI: "app://callback", issuer: "https://issuer.example", tokenStore: DPoPMemoryStore(), urlSession: session, dpopKey: key)
+        var calls = 0
+        var rejected = false
+        DPoPProtocol.handler = { request in
+            let body: [String: Any]; let status: Int
+            if request.url!.path.contains("well-known") {
+                status = 200
+                body = ["issuer":"https://issuer.example", "authorization_endpoint":"https://issuer.example/authorize", "token_endpoint":"https://issuer.example/token", "jwks_uri":"https://issuer.example/jwks", "response_types_supported":["code"], "subject_types_supported":["public"], "id_token_signing_alg_values_supported":["RS256"], "pushed_authorization_request_endpoint":"https://issuer.example/par", "require_pushed_authorization_requests":true]
+            } else {
+                XCTAssertEqual(request.url!.path, "/par")
+                _ = try self.verify(XCTUnwrap(request.value(forHTTPHeaderField: "DPoP")), publicKey)
+                calls += 1
+                status = rejected ? 500 : 201
+                body = ["request_uri":"urn:ietf:params:oauth:request_uri:" + String(repeating:"a", count:43), "expires_in":300]
+            }
+            return (HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, try JSONSerialization.data(withJSONObject: body))
+        }
+        let url = try await client.buildAuthorizationURL(state: "private-state", nonce: "private-nonce")
+        let items = URLComponents(url:url, resolvingAgainstBaseURL:false)!.queryItems!
+        XCTAssertEqual(Set(items.map(\.name)), Set(["client_id", "request_uri"]))
+        XCTAssertFalse(url.absoluteString.contains("private-state"))
+        XCTAssertEqual(calls, 1)
+        try client.clearTokens()
+        rejected = true
+        do { _ = try await client.buildAuthorizationURL(state:"failed"); XCTFail("PAR failure downgraded to redirect") } catch {}
+        rejected = false
+        _ = try await client.buildAuthorizationURL(state:"fresh")
+        XCTAssertEqual(calls, 3)
+    }
+
+    func testPasswordRefreshRetainsGrantAndRejectsBearerDowngrade() async throws {
+        let (key, publicKey) = key()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DPoPProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel(); DPoPProtocol.handler = nil }
+        let store = DPoPMemoryStore()
+        let client = OAuth42Client(clientId:"native", redirectURI:"app://callback", issuer:"https://issuer.example", tokenStore:store, urlSession:session, dpopKey:key)
+        var paths: [String] = []
+        var downgrade = false
+        DPoPProtocol.handler = { request in
+            paths.append(request.url!.path)
+            _ = try self.verify(XCTUnwrap(request.value(forHTTPHeaderField:"DPoP")), publicKey)
+            var body: [String:Any] = ["access_token":"access", "refresh_token":"opaque", "token_type":downgrade ? "Bearer" : "DPoP", "expires_in":900]
+            if request.url!.path == "/auth/login" { body["user"] = ["sub":"user", "email":"user@example.com"] }
+            else { XCTAssertEqual(request.url!.path,"/auth/refresh"); XCTAssertEqual(request.value(forHTTPHeaderField:"Authorization"), "DPoP opaque") }
+            return (HTTPURLResponse(url:request.url!, statusCode:200, httpVersion:nil, headerFields:nil)!, try JSONSerialization.data(withJSONObject:body))
+        }
+        _ = try await client.authenticateWithPassword(email:"user@example.com", password:"fixture")
+        XCTAssertEqual(try client.getStoredTokens()?.refreshGrant,"auth_login")
+        // Keychain serializes local grant metadata; it must survive a client restart.
+        store.tokens = try JSONDecoder().decode(TokenResponse.self, from:JSONEncoder().encode(XCTUnwrap(store.tokens)))
+        _ = try await client.refreshTokens()
+        XCTAssertEqual(paths, ["/auth/login", "/auth/refresh"])
+        XCTAssertEqual(try client.getStoredTokens()?.dpopKeyThumbprint, key.thumbprint)
+        downgrade = true
+        do { _ = try await client.refreshTokens(); XCTFail("Bearer password-refresh downgrade accepted") } catch {}
+    }
+
 }
 private final class DPoPMemoryStore: TokenStore {
     var tokens: TokenResponse?

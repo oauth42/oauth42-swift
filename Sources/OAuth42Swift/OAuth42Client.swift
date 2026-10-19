@@ -171,7 +171,7 @@ public class OAuth42Client {
     ///   - state: Optional state parameter for CSRF protection.
     ///   - nonce: Optional nonce for OpenID Connect ID token replay protection.
     /// - Returns: Authorization URL to open in browser
-    public func buildAuthorizationURL(state: String? = nil, nonce: String? = nil) async throws -> URL {
+    public func buildAuthorizationURL(state: String? = nil, nonce: String? = nil, pushedAuthorization: Bool = false) async throws -> URL {
         let config = try await fetchConfiguration()
 
         let transaction = try beginAuthorization(state: state, nonce: nonce)
@@ -192,6 +192,30 @@ public class OAuth42Client {
         ]
         if let nonce = transaction.nonce {
             queryItems.append(URLQueryItem(name: "nonce", value: nonce))
+        }
+        if pushedAuthorization || config.requirePushedAuthorizationRequests == true {
+            do {
+                guard let parEndpoint = config.pushedAuthorizationRequestEndpoint else {
+                    throw OAuth42Error.invalidConfiguration("Issuer does not advertise PAR")
+                }
+                var request = URLRequest(url: try endpoint(parEndpoint))
+                request.httpMethod = "POST"
+                request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                var fields = queryItems
+                if let clientSecret = clientSecret { fields.append(URLQueryItem(name: "client_secret", value: clientSecret)) }
+                request.httpBody = fields.map { "\(formEncode($0.name))=\(formEncode($0.value ?? ""))" }.joined(separator: "&").data(using: .utf8)
+                let (data, response) = try await send(request, tokenEndpoint: true)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 201,
+                    let pushed = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let reference = pushed["request_uri"] as? String,
+                    reference.range(of: "^urn:ietf:params:oauth:request_uri:[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+                    let expires = pushed["expires_in"] as? Int, expires > 0, expires <= 600
+                else { throw OAuth42Error.invalidResponse("Pushed authorization failed") }
+                queryItems = [URLQueryItem(name: "client_id", value: clientId), URLQueryItem(name: "request_uri", value: reference)]
+            } catch {
+                synchronized { pending = nil }
+                throw error
+            }
         }
         components?.queryItems = queryItems
 
@@ -426,6 +450,20 @@ public class OAuth42Client {
             throw OAuth42Error.missingRefreshToken
         }
 
+        let previous = try getStoredTokens()
+        if previous?.refreshGrant == "auth_login" {
+            var request = URLRequest(url: try endpoint(issuer + "/auth/refresh"))
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(refreshTokenValue)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await send(request, tokenEndpoint: true)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw OAuth42Error.invalidResponse("Password session refresh failed")
+            }
+            var tokens = try JSONDecoder().decode(TokenResponse.self, from: data)
+            tokens.refreshGrant = "auth_login"
+            try save(tokens, operation: operation)
+            return tokens
+        }
         let config = try await fetchConfiguration()
 
         // Transform the URL for local development (e.g., localhost -> IP)
@@ -441,7 +479,6 @@ public class OAuth42Client {
             parameters["client_secret"] = clientSecret
         }
 
-        let previous = try getStoredTokens()
         let previousIDToken = previous?.idToken ?? synchronized { trustedIDToken }
         let response = try await performTokenRequest(url: url, parameters: parameters)
         try await validateIDToken(response, config: config, nonce: nil, required: false)
@@ -480,9 +517,6 @@ public class OAuth42Client {
         mfaCode: String? = nil,
         rememberMe: Bool = true
     ) async throws -> LoginResponse {
-        guard dpopKey == nil else {
-            throw OAuth42Error.invalidConfiguration("DPoP requires the standard authorization-code flow")
-        }
         let operation = try beginOperation()
         defer { endOperation(operation) }
         // Build login endpoint URL
@@ -507,7 +541,7 @@ public class OAuth42Client {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         request.httpBody = try encoder.encode(loginRequest)
 
-        let (data, response) = try await send(request)
+        let (data, response) = try await send(request, tokenEndpoint: true)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OAuth42Error.invalidResponse("Not an HTTP response")
@@ -530,7 +564,7 @@ public class OAuth42Client {
                 refreshToken: loginResponse.refreshToken,
                 expiresIn: loginResponse.expiresIn,
                 user: loginResponse.user,
-                receivedAt: Date()
+                receivedAt: Date(), tokenType: loginResponse.tokenType
             )
 
             try save(loginResponse.toTokenResponse(), operation: operation)
@@ -758,6 +792,10 @@ public class OAuth42Client {
         lock.lock()
         defer { lock.unlock() }
         return try body()
+    }
+
+    private func formEncode(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"))!
     }
 
     private func endpoint(_ value: String) throws -> URL {
