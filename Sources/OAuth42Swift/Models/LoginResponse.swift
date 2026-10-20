@@ -3,6 +3,7 @@ import Foundation
 /// Login response from password-based authentication
 /// Corresponds to login_response.schema.json
 public struct LoginResponse: Codable {
+    public let tokenType: String
     public let accessToken: String
     public let refreshToken: String?
     public let expiresIn: Int
@@ -23,25 +24,29 @@ public struct LoginResponse: Codable {
 
     /// Convert to TokenResponse for unified token handling
     public func toTokenResponse() -> TokenResponse {
-        return TokenResponse(
+        var tokens = TokenResponse(
             accessToken: accessToken,
-            tokenType: "Bearer",
+            tokenType: tokenType,
             expiresIn: expiresIn,
             refreshToken: refreshToken,
             scope: nil,
             idToken: nil,
             receivedAt: receivedAt
         )
+        tokens.refreshGrant = "auth_login"
+        return tokens
     }
 
     enum CodingKeys: String, CodingKey {
+        case tokenType = "token_type"
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresIn = "expires_in"
         case user
     }
 
-    public init(accessToken: String, refreshToken: String?, expiresIn: Int, user: UserInfo, receivedAt: Date = Date()) {
+    public init(accessToken: String, refreshToken: String?, expiresIn: Int, user: UserInfo, receivedAt: Date = Date(), tokenType: String = "Bearer") {
+        self.tokenType = tokenType
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresIn = expiresIn
@@ -51,6 +56,7 @@ public struct LoginResponse: Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        tokenType = try container.decodeIfPresent(String.self, forKey: .tokenType) ?? "Bearer"
         accessToken = try container.decode(String.self, forKey: .accessToken)
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
         expiresIn = try container.decode(Int.self, forKey: .expiresIn)
@@ -60,6 +66,7 @@ public struct LoginResponse: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tokenType, forKey: .tokenType)
         try container.encode(accessToken, forKey: .accessToken)
         try container.encodeIfPresent(refreshToken, forKey: .refreshToken)
         try container.encode(expiresIn, forKey: .expiresIn)

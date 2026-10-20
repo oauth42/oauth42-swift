@@ -1,6 +1,7 @@
 #if os(macOS)
     import XCTest
     import Security
+    import CryptoKit
     @testable import OAuth42Swift
 
     /// Real HTTPS transport tests with a generated local certificate and a disposable server.
@@ -46,6 +47,80 @@
                     stats["redirect_hits"], 0, "307 must not transmit credentials to either redirect target")
             }
         }
+    }
+
+
+    /// Explicit local bridge; no Apple CI runner or production account involved.
+    final class BackendInteropTests: XCTestCase {
+        func testPARCodeRefreshAndPasswordGrantAgainstRealBackend() async throws {
+            guard let path = ProcessInfo.processInfo.environment["O42_SWIFT_FIXTURE_DIR"] else {
+                throw XCTSkip("Run OAuth42 scripts/test-swift-backend.py on the local Mac")
+            }
+            let directory = URL(fileURLWithPath:path)
+            let values = try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent("manifest.json"))) as! [String:String]
+            let issuer = try XCTUnwrap(values["issuer"])
+            let pem = try String(contentsOf:directory.appendingPathComponent("cert.pem"), encoding:.utf8)
+            let encoded = pem.components(separatedBy:.newlines).filter{!$0.hasPrefix("---")}.joined()
+            let cert = try XCTUnwrap(SecCertificateCreateWithData(nil,Data(base64Encoded:encoded)! as CFData))
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
+            let session = URLSession(configuration:configuration,delegate:FixtureTrust(cert),delegateQueue:nil)
+            defer { session.invalidateAndCancel() }
+            let signing = P256.Signing.PrivateKey()
+            let key = DPoPKey(publicKey:signing.publicKey,hardware:false){ try signing.signature(for:$0).rawRepresentation }
+            let store = BackendTokenStore()
+            let client = OAuth42Client(clientId:"oauth42-public",redirectURI:"o42test://callback",issuer:issuer,tokenStore:store,urlSession:session,dpopKey:key)
+            // Password login must retain its distinct refresh route after persistence.
+            _ = try await client.authenticateWithPassword(email:values["email"]!,password:values["password"]!)
+            let passwordRefresh = try await client.refreshTokens()
+            XCTAssertEqual(passwordRefresh.tokenType,"DPoP")
+            XCTAssertEqual(passwordRefresh.refreshGrant,"auth_login")
+            try client.clearTokens()
+            // The authorization driver is a synthetic already-authenticated browser.
+            var login = URLRequest(url:URL(string:issuer + "/auth/login")!)
+            login.httpMethod="POST"; login.setValue("application/json",forHTTPHeaderField:"Content-Type")
+            login.httpBody=try JSONSerialization.data(withJSONObject:["email":values["email"]!,"password":values["password"]!])
+            let (data,response)=try await session.data(for:login)
+            XCTAssertEqual((response as! HTTPURLResponse).statusCode,200)
+            let access=(try JSONSerialization.jsonObject(with:data) as! [String:Any])["access_token"] as! String
+            var identityRequest = URLRequest(url:URL(string:issuer + "/users/me")!)
+            identityRequest.setValue("Bearer \(access)",forHTTPHeaderField:"Authorization")
+            let (_,identityResponse) = try await session.data(for:identityRequest)
+            XCTAssertEqual((identityResponse as! HTTPURLResponse).statusCode,200)
+            let authorization = try await client.buildAuthorizationURL(state:"swift-backend-state",nonce:"swift-backend-nonce",pushedAuthorization:true)
+            XCTAssertEqual(Set(URLComponents(url:authorization,resolvingAgainstBaseURL:false)!.queryItems!.map(\.name)),Set(["client_id","request_uri"]))
+            var request=URLRequest(url:authorization);request.setValue("Bearer \(access)",forHTTPHeaderField:"Authorization")
+            let (_,start)=try await session.data(for:request)
+            XCTAssertEqual((start as! HTTPURLResponse).statusCode,302)
+            let next=try XCTUnwrap((start as! HTTPURLResponse).value(forHTTPHeaderField:"Location"))
+            request.url=URL(string:next,relativeTo:URL(string:issuer)!)!
+            let (_,redirect)=try await session.data(for:request)
+            XCTAssertEqual((redirect as! HTTPURLResponse).statusCode,302)
+            let location=try XCTUnwrap((redirect as! HTTPURLResponse).value(forHTTPHeaderField:"Location"))
+            let callback=try XCTUnwrap(URLComponents(string:location))
+            XCTAssertEqual(callback.scheme,"o42test")
+            let query=Dictionary(uniqueKeysWithValues:callback.queryItems!.map{($0.name,$0.value ?? "")})
+            let tokens=try await client.exchangeCodeForTokens(code:XCTUnwrap(query["code"]),state:XCTUnwrap(query["state"]))
+            XCTAssertEqual(tokens.tokenType,"DPoP")
+            let user=try await client.fetchUserInfo();XCTAssertEqual(user.email,values["email"])
+            let refreshed=try await client.refreshTokens()
+            XCTAssertNotEqual(tokens.refreshToken,refreshed.refreshToken)
+            XCTAssertEqual(refreshed.tokenType,"DPoP")
+            let refreshedUser = try await client.fetchUserInfo()
+            XCTAssertEqual(refreshedUser.id,user.id)
+            let wrong=P256.Signing.PrivateKey()
+            let other=DPoPKey(publicKey:wrong.publicKey,hardware:false){try wrong.signature(for:$0).rawRepresentation}
+            let impostor=OAuth42Client(clientId:"oauth42-public",redirectURI:"o42test://callback",issuer:issuer,urlSession:session,dpopKey:other)
+            do { _ = try await impostor.refreshTokens(refreshToken:refreshed.refreshToken);XCTFail("Stolen refresh accepted without original key") } catch {}
+            // Failed theft must not revoke the legitimate holder's refresh grant.
+            _ = try await client.refreshTokens()
+        }
+    }
+    private final class BackendTokenStore: TokenStore {
+        private var saved: Data?
+        func saveTokens(_ tokens:TokenResponse) throws { saved=try JSONEncoder().encode(tokens) }
+        func retrieveTokens() throws -> TokenResponse? { try saved.map { try JSONDecoder().decode(TokenResponse.self,from:$0) } }
+        func deleteTokens() throws { saved=nil }
     }
 
     private final class HTTPSFixture {
@@ -108,7 +183,8 @@
         }
     }
 
-    private final class FixtureTrust: NSObject, URLSessionDelegate {
+    private final class FixtureTrust: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
         let certificate: SecCertificate
         init(_ certificate: SecCertificate) { self.certificate = certificate }
         func urlSession(

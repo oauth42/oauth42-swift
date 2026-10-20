@@ -816,3 +816,56 @@ This SDK is available under the MIT license. See the LICENSE file for more info.
 - **OAuth42 TypeScript SDK** - TypeScript/JavaScript client library
 
 ---
+
+### DPoP (optional)
+
+For standard authorization-code and refresh flows, pass a retained installation key:
+
+```swift
+let keys = DPoPKeyStore(service: "your.app.installation.\(installationID)")
+// Resume: load only. If this returns nil while tokens exist, clear them and sign in again.
+let key = try keys.load()
+let client = OAuth42Client(
+    clientId: clientID, redirectURI: redirectURI, issuer: issuer,
+    tokenStore: tokenStore, dpopKey: key)
+```
+
+For a **fresh** sign-in, call `keys.create()` first if no key exists. Creation prefers
+Secure Enclave and fails when it is unavailable unless
+`allowSoftwareFallback: true` is explicitly chosen. Keep the random installation
+identifier outside Keychain so reinstall does not reuse an old installation's key.
+Do not create a new key to recover an existing refresh grant. Device migration or
+key loss requires reauthentication. `clearTokens()` retains the installation key;
+when deleting the key, also discard client instances holding it.
+
+Proofs, nonce retries, and the `DPoP` authorization scheme are handled automatically.
+A bearer response while DPoP is configured is rejected. Password login and refresh preserve the proof binding and local grant routing. DPoP proves key possession; it does not by
+itself attest the device or protect against a compromised process able to sign.
+
+### Pushed authorization and password-session refresh
+
+Call `buildAuthorizationURL(pushedAuthorization: true)` before opening the system
+browser when the client requires PAR. Discovery requiring PAR also enables it.
+The SDK retains state, nonce and S256 PKCE locally, pushes the request with its
+retained DPoP key, and returns an opaque request reference. Errors never fall back
+to an ordinary authorization redirect. Complete the existing callback with the
+returned code/state; ID-token signature, issuer, audience and nonce checks remain
+required. PAR references expire after the server's short transaction window.
+
+DPoP now supports password login and `/auth/refresh` as well as the standard OAuth
+flow. The token store persists the local grant type and proof-key thumbprint so
+refresh uses the correct endpoint after a restart. Missing/replaced keys and
+Bearer response downgrades fail closed; successful refresh never creates a new
+proof key. Public native clients still are not confidential clients.
+
+Run `swift test` and `scripts/test-ios.sh` on the local Mac. To verify the actual
+O42 backend, run `scripts/test-swift-backend.py` from the companion OAuth42 checkout
+with `O42_RUST_CI_CACHE_DIR` set outside that checkout. Its AL2023 fixture and local
+Swift test cover trusted TLS, PAR/code/PKCE/nonce, userinfo, refresh, password grant
+routing and wrong-key refresh denial. Apple jobs must not run in GitHub Actions.
+
+Apple verification runs on the owner's Mac only. The GitHub macOS workflow has
+been removed per the October 14 testing policy; pushing a branch or opening a PR
+must not start hosted Apple jobs. Before merging SDK security changes, run the
+local macOS/simulator checks and the real-backend bridge documented above, and
+record their results in the PR.
